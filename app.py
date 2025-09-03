@@ -4,6 +4,7 @@ import json
 import os
 from datetime import datetime
 import io
+import requests
 
 # Sayfa yapılandırması
 st.set_page_config(
@@ -69,6 +70,54 @@ TR_DE_NAVLUN_BY_DESI = {
     29.0: 105.55,
     30.0: 108.18,
 }
+
+# USD→EUR kur ayarları
+DEFAULT_USD_EUR = 0.92  # Ağ erişimi yoksa yedek kur
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_usd_eur_rate_live():
+    """USD→EUR kurunu birden fazla ücretsiz kaynaktan dener.
+    Başarılı olursa {'rate': float, 'source': str} döner; aksi halde None.
+    """
+    # 1) exchangerate.host
+    try:
+        r = requests.get(
+            "https://api.exchangerate.host/latest",
+            params={"base": "USD", "symbols": "EUR"},
+            timeout=6,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            rate = float(data.get("rates", {}).get("EUR", 0))
+            if rate > 0:
+                return {"rate": rate, "source": "exchangerate.host"}
+    except Exception:
+        pass
+    # 2) open.er-api.com
+    try:
+        r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=6)
+        if r.status_code == 200:
+            data = r.json()
+            rate = float(data.get("rates", {}).get("EUR", 0))
+            if rate > 0:
+                return {"rate": rate, "source": "open.er-api.com"}
+    except Exception:
+        pass
+    # 3) frankfurter.app
+    try:
+        r = requests.get(
+            "https://api.frankfurter.app/latest",
+            params={"from": "USD", "to": "EUR"},
+            timeout=6,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            rate = float(data.get("rates", {}).get("EUR", 0))
+            if rate > 0:
+                return {"rate": rate, "source": "frankfurter.app"}
+    except Exception:
+        pass
+    return None
 
 def find_nearest_desi_key(desi_value):
     """Girilen desiyi en yakın tablo anahtarına eşler. Beraberlikte yukarı yuvarlar."""
@@ -260,18 +309,21 @@ def main():
             help="Vergi oranı"
         )
         
+        # Kur (USD→EUR) bilgisi sidebar'da gösterilmez; arka planda belirlenir
+        fx_info = get_usd_eur_rate_live()
+        usd_eur_rate = float(fx_info['rate']) if (fx_info and fx_info.get('rate')) else DEFAULT_USD_EUR
+
         params = {
             "reklam_maliyeti": reklam_maliyeti,
             "pazaryeri_kesintisi": pazaryeri_kesintisi,
-            "vergi_yuzdesi": vergi_yuzdesi
+            "vergi_yuzdesi": vergi_yuzdesi,
+            "usd_eur_rate": float(usd_eur_rate)
         }
         
         st.markdown("---")
         st.markdown("**💡 Bilgi:**")
         st.markdown("Bu parametreler tüm hesaplamalarda kullanılır.")
-        st.markdown("Reklam:5,25")
-        st.markdown("Pazaryeri:%22")
-        st.markdown("Vergi:%19")
+        st.markdown("Reklam:5,25 | Pazaryeri:%22 | Vergi:%19")
 
         
         st.markdown("---")
@@ -531,7 +583,16 @@ def main():
             
             with col2:
                 fiyat = st.number_input("Satış Fiyatı (€)*", min_value=0.0, step=0.01)
-                ham_maliyet = st.number_input("Ham Maliyet (€)*", min_value=0.0, step=0.01)
+                hm_currency = st.selectbox("Ham Maliyet Para Birimi", options=["EUR", "USD"], index=0)
+                if hm_currency == "EUR":
+                    ham_maliyet_input = st.number_input("Ham Maliyet (EUR)*", min_value=0.0, step=0.01)
+                    ham_maliyet_eur_val = ham_maliyet_input
+                    ham_maliyet_usd_val = None
+                else:
+                    ham_maliyet_input = st.number_input("Ham Maliyet (USD)*", min_value=0.0, step=0.01)
+                    ham_maliyet_usd_val = ham_maliyet_input
+                    ham_maliyet_eur_val = ham_maliyet_input * params.get('usd_eur_rate', DEFAULT_USD_EUR)
+                    st.caption(f"Dönüşüm: ${ham_maliyet_usd_val:.2f} × {params.get('usd_eur_rate', DEFAULT_USD_EUR):.4f} = €{ham_maliyet_eur_val:.2f}")
                 desi = st.number_input(
                     "Desi",
                     min_value=0.0,
@@ -572,14 +633,14 @@ def main():
             submitted = st.form_submit_button("Ürün Ekle", type="primary")
             
             if submitted:
-                if title and fiyat > 0 and ham_maliyet >= 0:
+                if title and fiyat > 0 and ham_maliyet_eur_val >= 0:
                     # Yeni ürün verisi
                     new_product = {
                         'title': title,
                         'ean': ean,
                         'iwasku': iwasku,
                         'fiyat': f"€{fiyat:.2f}",
-                        'ham_maliyet_euro': ham_maliyet,
+                        'ham_maliyet_euro': round(ham_maliyet_eur_val, 2),
                         'desi': desi,
                         'unit_in': f"€{unit_in:.2f}",
                         'box_in': f"€{box_in:.2f}",
@@ -593,6 +654,8 @@ def main():
                         'tr_de_navlun': f"€{(tr_de_navlun_auto or 0.0):.2f}",
                         'reklam': f"€{params['reklam_maliyeti']:.2f}"
                     }
+                    if ham_maliyet_usd_val is not None:
+                        new_product['ham_maliyet_usd'] = round(ham_maliyet_usd_val, 2)
                     
                     # CSV'ye ekle
                     df = load_csv_data()
