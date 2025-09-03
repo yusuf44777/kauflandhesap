@@ -306,6 +306,24 @@ def main():
                 
                 # Tabloyu göster (renklendirme)
                 display_df = filtered_df[display_columns].round(2)
+                # Yumuşak renklerle kâr yüzdesi kategorilerine göre stiller
+                def _pct_cell_style(pct):
+                    try:
+                        if pct < 0:
+                            return 'background-color:#ffe6e6;color:#a10000;'
+                        elif pct < 10:
+                            return 'background-color:#fff3e0;color:#8a6d3b;'
+                        elif pct < 20:
+                            return 'background-color:#fffde7;color:#8a6d3b;'
+                        elif pct < 30:
+                            return 'background-color:#e8f5e9;color:#1b5e20;'
+                        elif pct <= 40:
+                            return 'background-color:#dcedc8;color:#33691e;'
+                        else:
+                            return 'background-color:#c8e6c9;color:#1b5e20;'
+                    except Exception:
+                        return ''
+
                 def _highlight_row(row):
                     cols = list(display_df.columns)
                     styles = [''] * len(cols)
@@ -314,10 +332,7 @@ def main():
                         idx_profit_pct = cols.index('Kar Marjı %')
                         if row['Kar Marjı'] < 0:
                             styles[idx_profit] = 'background-color:#ffe6e6;color:#a10000;'
-                        if row['Kar Marjı %'] < 0:
-                            styles[idx_profit_pct] = 'background-color:#ffe6e6;color:#a10000;'
-                        elif row['Kar Marjı %'] < 10:
-                            styles[idx_profit_pct] = 'background-color:#fff7e6;color:#8a6d3b;'
+                        styles[idx_profit_pct] = _pct_cell_style(row['Kar Marjı %'])
                     except Exception:
                         pass
                     return styles
@@ -623,11 +638,31 @@ def main():
                     kar_yuzdesi = (kar_marji / satis_fiyati * 100) if satis_fiyati > 0 else 0
                     st.metric("Kar Marjı %", f"{kar_yuzdesi:.1f}%")
                 
+                # Kategori rozeti (yumuşak renkler)
+                kategori = ""
+                bg, fg = "#ffffff", "#333333"
+                if kar_marji < 0:
+                    kategori, bg, fg = "Zararlı", "#ffe6e6", "#a10000"
+                elif kar_yuzdesi < 10:
+                    kategori, bg, fg = "Çok Düşük", "#fff3e0", "#8a6d3b"
+                elif kar_yuzdesi < 20:
+                    kategori, bg, fg = "Düşük", "#fffde7", "#8a6d3b"
+                elif kar_yuzdesi < 30:
+                    kategori, bg, fg = "Orta", "#e8f5e9", "#1b5e20"
+                elif kar_yuzdesi <= 40:
+                    kategori, bg, fg = "Yüksek", "#dcedc8", "#33691e"
+                else:
+                    kategori, bg, fg = "Çok Yüksek", "#c8e6c9", "#1b5e20"
+                st.markdown(
+                    f"<div style='margin-top:-8px;'><span style='background:{bg};color:{fg};padding:3px 10px;border-radius:12px;font-size:0.9em;'>Kategori: {kategori}</span></div>",
+                    unsafe_allow_html=True
+                )
+                
                 # Uyarılar
                 if kar_marji < 0:
                     st.error("⚠️ Bu ürün zarar ediyor!")
-                elif kar_yuzdesi < 10:
-                    st.warning("⚠️ Kar marjı düşük (<%10)")
+                elif kar_yuzdesi < 20:
+                    st.warning("⚠️ Kar marjı düşük (<%20)")
                 else:
                     st.success("✅ Kar marjı sağlıklı seviyede")
 
@@ -1015,10 +1050,11 @@ def main():
             st.subheader("📊 Kar Marjı Dağılımı")
             
             kar_araliklari = {
-                'Çok Yüksek (>30%)': len(df[df['Kar Marjı %'] > 30]),
-                'Yüksek (20-30%)': len(df[(df['Kar Marjı %'] >= 20) & (df['Kar Marjı %'] <= 30)]),
-                'Orta (10-20%)': len(df[(df['Kar Marjı %'] >= 10) & (df['Kar Marjı %'] < 20)]),
-                'Düşük (0-10%)': len(df[(df['Kar Marjı %'] >= 0) & (df['Kar Marjı %'] < 10)]),
+                'Çok Yüksek (>40%)': len(df[df['Kar Marjı %'] > 40]),
+                'Yüksek (30-40%)': len(df[(df['Kar Marjı %'] >= 30) & (df['Kar Marjı %'] <= 40)]),
+                'Orta (20-30%)': len(df[(df['Kar Marjı %'] >= 20) & (df['Kar Marjı %'] < 30)]),
+                'Düşük (10-20%)': len(df[(df['Kar Marjı %'] >= 10) & (df['Kar Marjı %'] < 20)]),
+                'Çok Düşük (0-10%)': len(df[(df['Kar Marjı %'] >= 0) & (df['Kar Marjı %'] < 10)]),
                 'Zararlı (<0%)': len(df[df['Kar Marjı %'] < 0])
             }
             
@@ -1026,8 +1062,27 @@ def main():
             
             col1, col2 = st.columns(2)
             
+            def _dist_row_style(row):
+                aralik = str(row.get('Aralık', ''))
+                # Varsayılan nötr stil
+                bg, fg = '#ffffff', '#333333'
+                if 'Zararlı' in aralik:
+                    bg, fg = '#ffe6e6', '#a10000'
+                elif '0-10%' in aralik:
+                    bg, fg = '#fff3e0', '#8a6d3b'
+                elif '10-20%' in aralik:
+                    bg, fg = '#fffde7', '#8a6d3b'
+                elif '20-30%' in aralik:
+                    bg, fg = '#e8f5e9', '#1b5e20'
+                elif '30-40%' in aralik:
+                    bg, fg = '#dcedc8', '#33691e'
+                elif '>40%' in aralik:
+                    bg, fg = '#c8e6c9', '#1b5e20'
+                return [f'background-color:{bg};color:{fg};'] * len(row)
+
             with col1:
-                st.dataframe(kar_df, hide_index=True)
+                styler_dist = kar_df.style.apply(_dist_row_style, axis=1)
+                st.dataframe(styler_dist, hide_index=True)
             
             with col2:
                 # Basit bar chart
@@ -1113,13 +1168,13 @@ def main():
             st.subheader("💡 Öneriler")
             
             zararlı_urun_sayisi = len(df[df['Kar Marjı'] < 0])
-            düşük_kar_sayisi = len(df[(df['Kar Marjı %'] >= 0) & (df['Kar Marjı %'] < 10)])
+            düşük_kar_sayisi = len(df[(df['Kar Marjı %'] >= 0) & (df['Kar Marjı %'] < 20)])
             
             if zararlı_urun_sayisi > 0:
                 st.warning(f"⚠️ {zararlı_urun_sayisi} ürün zarar ediyor. Bu ürünlerin fiyatlarını gözden geçirin.")
             
             if düşük_kar_sayisi > 0:
-                st.info(f"ℹ️ {düşük_kar_sayisi} ürünün kar marjı %10'un altında. Fiyat optimizasyonu düşünebilirsiniz.")
+                st.info(f"ℹ️ {düşük_kar_sayisi} ürünün kar marjı %20'nin altında. Fiyat optimizasyonu düşünebilirsiniz.")
             
             if ortalama_kar > 20:
                 st.success("✅ Genel kar marjı sağlıklı seviyede!")
