@@ -268,7 +268,7 @@ def main():
         
         st.markdown("---")
         st.markdown("**💡 Bilgi:**")
-        st.markdown("Bu parametreler tüm hesaplamalarda kullanılır. Reklam:5,25, Pazaryeri:%22, Vergi:%19")
+        st.markdown("Bu parametreler tüm hesaplamalarda kullanılır.")
         st.markdown("Reklam:5,25")
         st.markdown("Pazaryeri:%22")
         st.markdown("Vergi:%19")
@@ -784,54 +784,6 @@ def main():
                 else:
                     st.success("✅ Kar marjı sağlıklı seviyede")
 
-                # Hızlı aksiyonlar: hedef kâra göre fiyat öner ve uygula
-                st.markdown("---")
-                st.subheader("⚡ Hızlı Aksiyonlar")
-                ac1, ac2 = st.columns([2, 1])
-                with ac1:
-                    hedef_kar_pct = st.slider(
-                        "Hedef Kâr Marjı %",
-                        min_value=0,
-                        max_value=80,
-                        value=25,
-                        step=1,
-                        help="Satış fiyatı bazında hedef kâr yüzdesi"
-                    )
-                    son_maliyet = hesaplama['son_maliyet']
-                    oran = 1 - (hedef_kar_pct / 100.0)
-                    onerilen_fiyat = son_maliyet / oran if oran > 0 else None
-                    if onerilen_fiyat is not None:
-                        st.metric("Önerilen Satış Fiyatı", f"€{onerilen_fiyat:.2f}")
-                with ac2:
-                    if (onerilen_fiyat is not None) and st.button("Fiyatı CSV’ye uygula", type="primary"):
-                        with st.spinner('Güncelleniyor...'):
-                            df_base = load_csv_data()
-                            if not df_base.empty:
-                                updated = False
-                                # Öncelik EAN ile güncelle
-                                if 'ean' in df_base.columns and pd.notna(selected_row.get('ean', None)) and str(selected_row['ean']).strip() != "":
-                                    df_base['ean'] = df_base['ean'].astype(str)
-                                    mask = df_base['ean'] == str(selected_row['ean'])
-                                    if mask.any():
-                                        df_base.loc[mask, 'fiyat'] = f"€{onerilen_fiyat:.2f}"
-                                        updated = True
-                                # EAN yoksa title ile dener
-                                if not updated and 'title' in df_base.columns:
-                                    mask = df_base['title'] == selected_row['title']
-                                    if mask.any():
-                                        df_base.loc[mask, 'fiyat'] = f"€{onerilen_fiyat:.2f}"
-                                        updated = True
-                                if updated:
-                                    df_base.to_csv(CSV_FILE, index=False)
-                                    try:
-                                        load_csv_data.clear()
-                                    except Exception:
-                                        pass
-                                    st.success("Yeni fiyat kaydedildi.")
-                                    st.rerun()
-                                else:
-                                    st.warning("Güncellenecek satır bulunamadı.")
-                                    
                 # Fiyat simülasyonu
                 st.markdown("---")
                 st.subheader("🧪 Fiyat Simülasyonu")
@@ -840,7 +792,7 @@ def main():
                     min_value=0.0,
                     value=float(satis_fiyati),
                     step=0.01,
-                    help="Bu fiyatla kâr ve kâr yüzdesini anında görün (kaydetmez)"
+                    help="Bu fiyatla kâr ve kâr yüzdesini anında görün; dilerseniz kaydedin"
                 )
                 row_sim = selected_row.copy()
                 row_sim['fiyat'] = sim_satis_fiyati
@@ -876,93 +828,62 @@ def main():
                     f"<div style='margin-top:-8px;'><span style='background:{bg_sim};color:{fg_sim};padding:3px 10px;border-radius:12px;font-size:0.9em;'>Simülasyon Kategorisi: {sim_kategori} | Rota: {hesaplama_sim['optimal_route']}</span></div>",
                     unsafe_allow_html=True
                 )
-
-
-                # ROI bazlı fiyat belirleme
-                st.markdown("---")
-                st.subheader("📈 ROI Bazlı Fiyatlama")
-                rcol1, rcol2, rcol3 = st.columns([2,1,1])
-                with rcol1:
-                    roi_ratio = st.slider(
-                        "Hedef ROI",
-                        min_value=0.0,
-                        max_value=3.0,
-                        value=0.5,
-                        step=0.05,
-                        help="ROI = Kâr / (Navlun + Ham Maliyet). Örn: 0.5 = %50 ROI"
-                    )
-                with rcol2:
+                
+                # ROI (Simülasyon) ve rota seçimi
+                roi_sel_col, roi_val_col = st.columns([2, 1])
+                with roi_sel_col:
                     roi_route_choice = st.selectbox(
-                        "Rota (ROI için)",
+                        "ROI için Rota",
                         options=["Optimal", "TR→NL→DE", "TR→DE"],
-                        help="ROI hesaplamasında esas alınacak rota"
+                        help="ROI = Kâr / (Ham Maliyet + Navlun)"
                     )
-                with rcol3:
-                    st.empty()
-
-                # ROI hesaplarına temel değerler
-                ham_maliyet_val = clean_euro_value(selected_row.get('ham_maliyet_euro', 0))
-                trnl_navlun = hesaplama.get('tr_nl_de_navlun', 0.0)
-                trde_navlun = hesaplama.get('tr_de_navlun', 0.0)
-
-                if roi_route_choice == "TR→NL→DE":
-                    roi_navlun = trnl_navlun
-                    roi_son_maliyet = hesaplama['tr_nl_de_son_maliyet']
-                elif roi_route_choice == "TR→DE":
-                    roi_navlun = trde_navlun
-                    roi_son_maliyet = hesaplama['tr_de_son_maliyet']
-                else:
-                    if hesaplama['optimal_route'] == "TR→NL→DE":
-                        roi_navlun = trnl_navlun
-                        roi_son_maliyet = hesaplama['tr_nl_de_son_maliyet']
+                with roi_val_col:
+                    ham_maliyet_val = clean_euro_value(selected_row.get('ham_maliyet_euro', 0))
+                    if roi_route_choice == "TR→NL→DE":
+                        roi_navlun = hesaplama_sim.get('tr_nl_de_navlun', 0.0)
+                        roi_son_maliyet = hesaplama_sim.get('tr_nl_de_son_maliyet', 0.0)
+                    elif roi_route_choice == "TR→DE":
+                        roi_navlun = hesaplama_sim.get('tr_de_navlun', 0.0)
+                        roi_son_maliyet = hesaplama_sim.get('tr_de_son_maliyet', 0.0)
                     else:
-                        roi_navlun = trde_navlun
-                        roi_son_maliyet = hesaplama['tr_de_son_maliyet']
-
-                roi_denom = ham_maliyet_val + roi_navlun
-                if roi_denom > 0:
-                    onerilen_fiyat_roi = roi_son_maliyet + (roi_ratio) * roi_denom
-                    mevcut_roi = ((satis_fiyati - roi_son_maliyet) / roi_denom)
-                else:
-                    onerilen_fiyat_roi = None
-                    mevcut_roi = None
-
-                m1, m2 = st.columns(2)
-                with m1:
-                    if onerilen_fiyat_roi is not None:
-                        st.metric("Önerilen Satış Fiyatı (ROI)", f"€{onerilen_fiyat_roi:.2f}")
-                    else:
-                        st.info("ROI hesaplanamıyor: (Navlun + Ham) = 0")
-                with m2:
-                    if mevcut_roi is not None:
-                        st.metric("Mevcut ROI", f"{mevcut_roi:.2f}")
-
-                if (onerilen_fiyat_roi is not None) and st.button("Fiyatı CSV’ye uygula (ROI)"):
-                    with st.spinner('Güncelleniyor...'):
-                        df_base = load_csv_data()
-                        if not df_base.empty:
-                            updated = False
-                            if 'ean' in df_base.columns and pd.notna(selected_row.get('ean', None)) and str(selected_row['ean']).strip() != "":
-                                df_base['ean'] = df_base['ean'].astype(str)
-                                mask = df_base['ean'] == str(selected_row['ean'])
-                                if mask.any():
-                                    df_base.loc[mask, 'fiyat'] = f"€{onerilen_fiyat_roi:.2f}"
-                                    updated = True
-                            if not updated and 'title' in df_base.columns:
-                                mask = df_base['title'] == selected_row['title']
-                                if mask.any():
-                                    df_base.loc[mask, 'fiyat'] = f"€{onerilen_fiyat_roi:.2f}"
-                                    updated = True
-                            if updated:
-                                df_base.to_csv(CSV_FILE, index=False)
-                                try:
-                                    load_csv_data.clear()
-                                except Exception:
-                                    pass
-                                st.success("Yeni fiyat (ROI) kaydedildi.")
-                                st.rerun()
-                            else:
-                                st.warning("Güncellenecek satır bulunamadı.")
+                        if hesaplama_sim.get('optimal_route') == "TR→NL→DE":
+                            roi_navlun = hesaplama_sim.get('tr_nl_de_navlun', 0.0)
+                            roi_son_maliyet = hesaplama_sim.get('tr_nl_de_son_maliyet', 0.0)
+                        else:
+                            roi_navlun = hesaplama_sim.get('tr_de_navlun', 0.0)
+                            roi_son_maliyet = hesaplama_sim.get('tr_de_son_maliyet', 0.0)
+                    roi_denom = ham_maliyet_val + roi_navlun
+                    sim_roi = ((sim_satis_fiyati - roi_son_maliyet) / roi_denom) if roi_denom > 0 else 0.0
+                    st.metric("Sim. ROI", f"{sim_roi:.2f}")
+                # Simülasyon fiyatını kaydet
+                save_col1, save_col2 = st.columns([1,3])
+                with save_col1:
+                    if st.button("Fiyatı CSV’ye uygula (Simülasyon)", type="primary"):
+                        with st.spinner('Güncelleniyor...'):
+                            df_base = load_csv_data()
+                            if not df_base.empty:
+                                updated = False
+                                if 'ean' in df_base.columns and pd.notna(selected_row.get('ean', None)) and str(selected_row['ean']).strip() != "":
+                                    df_base['ean'] = df_base['ean'].astype(str)
+                                    mask = df_base['ean'] == str(selected_row['ean'])
+                                    if mask.any():
+                                        df_base.loc[mask, 'fiyat'] = f"€{sim_satis_fiyati:.2f}"
+                                        updated = True
+                                if not updated and 'title' in df_base.columns:
+                                    mask = df_base['title'] == selected_row['title']
+                                    if mask.any():
+                                        df_base.loc[mask, 'fiyat'] = f"€{sim_satis_fiyati:.2f}"
+                                        updated = True
+                                if updated:
+                                    df_base.to_csv(CSV_FILE, index=False)
+                                    try:
+                                        load_csv_data.clear()
+                                    except Exception:
+                                        pass
+                                    st.success("Simülasyon fiyatı kaydedildi.")
+                                    st.rerun()
+                                else:
+                                    st.warning("Güncellenecek satır bulunamadı.")
         else:
             st.info("Hesaplama yapabilmek için önce ürün eklemelisiniz.")
     
