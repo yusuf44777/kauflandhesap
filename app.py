@@ -76,6 +76,8 @@ def calculate_total_cost(row, params):
     """İki farklı rota ile maliyet hesaplar: TR→NL→DE ve TR→DE"""
     # Ham maliyet
     ham_maliyet = clean_euro_value(row.get('ham_maliyet_euro', 0))
+    # Satış fiyatı (pazar yeri ve vergi bu fiyata göre hesaplanacak)
+    satis_fiyati = clean_euro_value(row.get('fiyat', 0))
     
     # Maliyet bileşenleri
     unit_in = clean_euro_value(row.get('unit_in', 0))
@@ -94,16 +96,18 @@ def calculate_total_cost(row, params):
     tr_ne_navlun_hesaplanan = unit_in + box_in + pick_pack + storage + fedex
     tr_nl_de_temel_maliyet = ham_maliyet + tr_ne_navlun_hesaplanan + ne_de_navlun
     tr_nl_de_reklam_dahil = tr_nl_de_temel_maliyet + reklam_maliyeti
-    tr_nl_de_vergi = (tr_nl_de_reklam_dahil * params['vergi_yuzdesi']) / 100
-    tr_nl_de_pazaryeri_kesinti = (tr_nl_de_reklam_dahil * params['pazaryeri_kesintisi']) / 100
+    # Vergi ve pazar yeri kesintisi satış fiyatı üzerinden hesaplanır
+    tr_nl_de_vergi = (satis_fiyati * params['vergi_yuzdesi']) / 100
+    tr_nl_de_pazaryeri_kesinti = (satis_fiyati * params['pazaryeri_kesintisi']) / 100
     tr_nl_de_son_maliyet = tr_nl_de_reklam_dahil + tr_nl_de_vergi + tr_nl_de_pazaryeri_kesinti
     
     # ROTA 2: TR → DE (Direkt)
     tr_de_navlun_hesaplanan = express_kargo + ddp
     tr_de_temel_maliyet = ham_maliyet + tr_de_navlun_hesaplanan
     tr_de_reklam_dahil = tr_de_temel_maliyet + reklam_maliyeti
-    tr_de_vergi = (tr_de_reklam_dahil * params['vergi_yuzdesi']) / 100
-    tr_de_pazaryeri_kesinti = (tr_de_reklam_dahil * params['pazaryeri_kesintisi']) / 100
+    # Vergi ve pazar yeri kesintisi satış fiyatı üzerinden hesaplanır
+    tr_de_vergi = (satis_fiyati * params['vergi_yuzdesi']) / 100
+    tr_de_pazaryeri_kesinti = (satis_fiyati * params['pazaryeri_kesintisi']) / 100
     tr_de_son_maliyet = tr_de_reklam_dahil + tr_de_vergi + tr_de_pazaryeri_kesinti
     
     # En uygun rotayı seç
