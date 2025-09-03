@@ -85,16 +85,20 @@ def calculate_total_cost(row, params):
     pick_pack = clean_euro_value(row.get('pick_pack', 0))
     storage = clean_euro_value(row.get('storage', 0))
     fedex = clean_euro_value(row.get('fedex', 0))
-    ne_de_navlun = clean_euro_value(row.get('ne_de_navlun', 0))
+    ne_de_navlun = clean_euro_value(row.get('ne_de_navlun', 0))  # NL→DE navlun
+    tr_ne_navlun_field = clean_euro_value(row.get('tr_ne_navlun', 0))  # TR→NL toplam navlun (varsa)
     express_kargo = clean_euro_value(row.get('express_kargo', 0))
     ddp = clean_euro_value(row.get('ddp', 0))
+    tr_de_navlun_field = clean_euro_value(row.get('tr_de_navlun', 0))  # TR→DE toplam navlun (varsa)
     
     # Reklam maliyeti
     reklam_maliyeti = params['reklam_maliyeti']
     
     # ROTA 1: TR → NL → DE
+    # TR→NL segmenti: detay bileşenler varsa topla; yoksa tek alanı kullan
     tr_ne_navlun_hesaplanan = unit_in + box_in + pick_pack + storage + fedex
-    tr_nl_de_temel_maliyet = ham_maliyet + tr_ne_navlun_hesaplanan + ne_de_navlun
+    tr_ne_navlun_final = tr_ne_navlun_hesaplanan if tr_ne_navlun_hesaplanan > 0 else tr_ne_navlun_field
+    tr_nl_de_temel_maliyet = ham_maliyet + tr_ne_navlun_final + ne_de_navlun
     tr_nl_de_reklam_dahil = tr_nl_de_temel_maliyet + reklam_maliyeti
     # Vergi ve pazar yeri kesintisi satış fiyatı üzerinden hesaplanır
     tr_nl_de_vergi = (satis_fiyati * params['vergi_yuzdesi']) / 100
@@ -102,8 +106,10 @@ def calculate_total_cost(row, params):
     tr_nl_de_son_maliyet = tr_nl_de_reklam_dahil + tr_nl_de_vergi + tr_nl_de_pazaryeri_kesinti
     
     # ROTA 2: TR → DE (Direkt)
+    # TR→DE segmenti: detay bileşenler varsa topla; yoksa tek alanı kullan
     tr_de_navlun_hesaplanan = express_kargo + ddp
-    tr_de_temel_maliyet = ham_maliyet + tr_de_navlun_hesaplanan
+    tr_de_navlun_final = tr_de_navlun_hesaplanan if tr_de_navlun_hesaplanan > 0 else tr_de_navlun_field
+    tr_de_temel_maliyet = ham_maliyet + tr_de_navlun_final
     tr_de_reklam_dahil = tr_de_temel_maliyet + reklam_maliyeti
     # Vergi ve pazar yeri kesintisi satış fiyatı üzerinden hesaplanır
     tr_de_vergi = (satis_fiyati * params['vergi_yuzdesi']) / 100
@@ -117,7 +123,7 @@ def calculate_total_cost(row, params):
     return {
         # TR→NL→DE Rotası
         'tr_nl_de_temel_maliyet': tr_nl_de_temel_maliyet,
-        'tr_nl_de_navlun': tr_ne_navlun_hesaplanan + ne_de_navlun,
+        'tr_nl_de_navlun': tr_ne_navlun_final + ne_de_navlun,
         'tr_nl_de_reklam_dahil': tr_nl_de_reklam_dahil,
         'tr_nl_de_vergi': tr_nl_de_vergi,
         'tr_nl_de_pazaryeri_kesinti': tr_nl_de_pazaryeri_kesinti,
@@ -125,7 +131,7 @@ def calculate_total_cost(row, params):
         
         # TR→DE Direkt Rota
         'tr_de_temel_maliyet': tr_de_temel_maliyet,
-        'tr_de_navlun': tr_de_navlun_hesaplanan,
+        'tr_de_navlun': tr_de_navlun_final,
         'tr_de_reklam_dahil': tr_de_reklam_dahil,
         'tr_de_vergi': tr_de_vergi,
         'tr_de_pazaryeri_kesinti': tr_de_pazaryeri_kesinti,
@@ -609,7 +615,7 @@ def main():
                     'TR→DE (€)': [
                         clean_euro_value(selected_row['ham_maliyet_euro']),
                         0, 0, 0, 0, 0,  # TR-DE rotasında bu maliyetler yok
-                        clean_euro_value(selected_row['express_kargo']) + clean_euro_value(selected_row['ddp']),
+                        hesaplama['tr_de_navlun'],
                         hesaplama['reklam_maliyeti'],
                         hesaplama['tr_de_vergi'],
                         hesaplama['tr_de_pazaryeri_kesinti']
