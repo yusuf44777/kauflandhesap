@@ -22,9 +22,80 @@ CSV_FILE = "kauflandurunler.csv"
 # Varsayılan parametreler
 DEFAULT_PARAMS = {
     "reklam_maliyeti": 5.25,
-    "pazaryeri_kesintisi": 15.0,
-    "vergi_yuzdesi": 20.0
+    "pazaryeri_kesintisi": 22.0,
+    "vergi_yuzdesi": 19.0
 }
+
+# TR→DE navlun fiyatları (desi → €)
+TR_DE_NAVLUN_BY_DESI = {
+    0.5: 13.51,
+    1.0: 13.51,
+    1.5: 13.51,
+    2.0: 13.51,
+    2.5: 16.10,
+    3.0: 16.10,
+    3.5: 16.10,
+    4.0: 16.10,
+    4.5: 16.10,
+    5.0: 28.75,
+    5.5: 28.75,
+    6.0: 28.75,
+    6.5: 28.75,
+    7.0: 28.75,
+    7.5: 28.75,
+    8.0: 28.75,
+    8.5: 28.75,
+    9.0: 28.75,
+    9.5: 28.75,
+    10.0: 28.75,
+    11.0: 58.29,
+    12.0: 60.92,
+    13.0: 63.54,
+    14.0: 66.17,
+    15.0: 68.79,
+    16.0: 71.42,
+    17.0: 74.04,
+    18.0: 76.67,
+    19.0: 79.30,
+    20.0: 81.92,
+    21.0: 84.55,
+    22.0: 87.17,
+    23.0: 89.80,
+    24.0: 92.42,
+    25.0: 95.05,
+    26.0: 97.68,
+    27.0: 100.30,
+    28.0: 102.93,
+    29.0: 105.55,
+    30.0: 108.18,
+}
+
+def find_nearest_desi_key(desi_value):
+    """Girilen desiyi en yakın tablo anahtarına eşler. Beraberlikte yukarı yuvarlar."""
+    try:
+        if desi_value is None:
+            return None
+        d = float(desi_value)
+    except Exception:
+        return None
+    if d <= 0:
+        return None
+    keys = list(TR_DE_NAVLUN_BY_DESI.keys())
+    best_k = None
+    best_diff = None
+    for k in keys:
+        diff = abs(k - d)
+        if best_diff is None or diff < best_diff - 1e-9 or (abs(diff - best_diff) <= 1e-9 and k > best_k):
+            best_diff = diff
+            best_k = k
+    return best_k
+
+def get_tr_de_navlun_by_desi(desi_value):
+    """Desi'ye göre en yakın tablo değerinden TR→DE navlun (€) döndürür."""
+    k = find_nearest_desi_key(desi_value)
+    if k is None:
+        return None
+    return TR_DE_NAVLUN_BY_DESI.get(k)
 
 @st.cache_data(show_spinner=False)
 def load_json_data():
@@ -90,6 +161,8 @@ def calculate_total_cost(row, params):
     express_kargo = clean_euro_value(row.get('express_kargo', 0))
     ddp = clean_euro_value(row.get('ddp', 0))
     tr_de_navlun_field = clean_euro_value(row.get('tr_de_navlun', 0))  # TR→DE toplam navlun (varsa)
+    desi_val = clean_euro_value(row.get('desi', 0))
+    tr_de_navlun_from_table = get_tr_de_navlun_by_desi(desi_val) or 0.0
     
     # Reklam maliyeti
     reklam_maliyeti = params['reklam_maliyeti']
@@ -108,7 +181,13 @@ def calculate_total_cost(row, params):
     # ROTA 2: TR → DE (Direkt)
     # TR→DE segmenti: detay bileşenler varsa topla; yoksa tek alanı kullan
     tr_de_navlun_hesaplanan = express_kargo + ddp
-    tr_de_navlun_final = tr_de_navlun_hesaplanan if tr_de_navlun_hesaplanan > 0 else tr_de_navlun_field
+    # Öncelik tabloya göre otomatik navlun; yoksa mevcut alanlara düş
+    if tr_de_navlun_from_table > 0:
+        tr_de_navlun_final = tr_de_navlun_from_table
+    elif tr_de_navlun_hesaplanan > 0:
+        tr_de_navlun_final = tr_de_navlun_hesaplanan
+    else:
+        tr_de_navlun_final = tr_de_navlun_field
     tr_de_temel_maliyet = ham_maliyet + tr_de_navlun_final
     tr_de_reklam_dahil = tr_de_temel_maliyet + reklam_maliyeti
     # Vergi ve pazar yeri kesintisi satış fiyatı üzerinden hesaplanır
@@ -189,7 +268,11 @@ def main():
         
         st.markdown("---")
         st.markdown("**💡 Bilgi:**")
-        st.markdown("Bu parametreler tüm hesaplamalarda kullanılır.")
+        st.markdown("Bu parametreler tüm hesaplamalarda kullanılır. Reklam:5,25, Pazaryeri:%22, Vergi:%19")
+        st.markdown("Reklam:5,25")
+        st.markdown("Pazaryeri:%22")
+        st.markdown("Vergi:%19")
+
         
         st.markdown("---")
         st.markdown("**🔗 Faydalı Linkler:**")
@@ -216,9 +299,18 @@ def main():
             with st.spinner('Hesaplamalar yapılıyor...'):
                 df['Satış Fiyatı'] = df['fiyat'].apply(clean_euro_value)
                 hesaplama_sonuclari = []
+                roi_list = []
                 for index, row in df.iterrows():
                     hesaplama = calculate_total_cost(row, params)
                     hesaplama_sonuclari.append(hesaplama)
+                    try:
+                        ham = clean_euro_value(row.get('ham_maliyet_euro', 0))
+                        navlun = hesaplama['tr_nl_de_navlun'] if hesaplama['optimal_route'] == "TR→NL→DE" else hesaplama['tr_de_navlun']
+                        denom = ham + navlun
+                        roi_val = ((df.at[index, 'Satış Fiyatı'] - hesaplama['optimal_cost']) / denom) if denom > 0 else 0.0
+                    except Exception:
+                        roi_val = 0.0
+                    roi_list.append(roi_val)
             
             # Hesaplama sonuçlarını DataFrame'e ekle
             df['TR→NL→DE Maliyet'] = [h['tr_nl_de_son_maliyet'] for h in hesaplama_sonuclari]
@@ -227,11 +319,12 @@ def main():
             df['Son Maliyet'] = [h['optimal_cost'] for h in hesaplama_sonuclari]
             df['Kar Marjı'] = df['Satış Fiyatı'] - df['Son Maliyet']
             df['Kar Marjı %'] = ((df['Satış Fiyatı'] - df['Son Maliyet']) / df['Satış Fiyatı'] * 100).round(2)
+            df['ROI'] = [round(x, 2) for x in roi_list]
             
             # Gösterim için sütunları seç
             display_columns = [
                 'title', 'ean', 'Satış Fiyatı', 'TR→NL→DE Maliyet', 
-                'TR→DE Maliyet', 'Optimal Rota', 'Son Maliyet', 'Kar Marjı', 'Kar Marjı %'
+                'TR→DE Maliyet', 'Optimal Rota', 'Son Maliyet', 'Kar Marjı', 'Kar Marjı %', 'ROI'
             ]
             
             # Filtreleme
@@ -350,7 +443,8 @@ def main():
                         'TR→DE Maliyet': '€{:.2f}',
                         'Son Maliyet': '€{:.2f}',
                         'Kar Marjı': '€{:.2f}',
-                        'Kar Marjı %': '{:.1f}%'
+                        'Kar Marjı %': '{:.1f}%',
+                        'ROI': '{:.2f}'
                     })
                     .apply(_highlight_row, axis=1)
                 )
@@ -377,6 +471,8 @@ def main():
                         column_config={
                             'title': st.column_config.TextColumn('Ürün'),
                             'ean': st.column_config.TextColumn('EAN'),
+                            'ne_de_navlun': st.column_config.NumberColumn('NL-DE Navlun (€)', step=0.01),
+                            'tr_ne_navlun': st.column_config.NumberColumn('TR-NL Navlun (€)', step=0.01),
                         }
                     )
                     c1, c2 = st.columns([1,1])
@@ -436,17 +532,33 @@ def main():
             with col2:
                 fiyat = st.number_input("Satış Fiyatı (€)*", min_value=0.0, step=0.01)
                 ham_maliyet = st.number_input("Ham Maliyet (€)*", min_value=0.0, step=0.01)
-                desi = st.number_input("Desi", min_value=0.0, step=0.1)
+                desi = st.number_input(
+                    "Desi",
+                    min_value=0.0,
+                    step=0.1,
+                    help="Desi değerini girin; en yakın tablo değerine otomatik eşlenir."
+                )
             
             # Navlun maliyetleri
             st.subheader("🚚 Navlun Maliyetleri")
             col3, col4 = st.columns(2)
             with col3:
-                tr_ne_navlun = st.number_input("TR-NE Navlun (€)", min_value=0.0, step=0.01)
-                ne_de_navlun = st.number_input("NE-DE Navlun (€)", min_value=0.0, step=0.01)
+                tr_ne_navlun = st.number_input("TR-NL Navlun (€)", min_value=0.0, step=0.01)
+                ne_de_navlun = st.number_input(
+                    "NL-DE Navlun (€)",
+                    min_value=0.0,
+                    step=0.01,
+                    help="1 Eylül 2025 tarihiyle fiyatı 7.24€"
+                )
+                st.caption("1 Eylül 2025 tarihiyle fiyatı 7.24€")
             
             with col4:
-                tr_de_navlun = st.number_input("TR-DE Navlun (€)", min_value=0.0, step=0.01)
+                tr_de_navlun_auto = get_tr_de_navlun_by_desi(desi)
+                match_key = find_nearest_desi_key(desi)
+                if tr_de_navlun_auto is not None:
+                    st.metric("TR-DE Navlun (Otomatik)", f"€{tr_de_navlun_auto:.2f}")
+                    if match_key is not None:
+                        st.caption(f"Eşleşen desi (tablo): {match_key:.1f}")
             
             # Otomatik olarak 0 değeri atanacak alanlar
             unit_in = 0.0
@@ -478,7 +590,7 @@ def main():
                         'ne_de_navlun': f"€{ne_de_navlun:.2f}",
                         'express_kargo': f"€{express_kargo:.2f}",
                         'ddp': f"€{ddp:.2f}",
-                        'tr_de_navlun': f"€{tr_de_navlun:.2f}",
+                        'tr_de_navlun': f"€{(tr_de_navlun_auto or 0.0):.2f}",
                         'reklam': f"€{params['reklam_maliyeti']:.2f}"
                     }
                     
@@ -599,7 +711,7 @@ def main():
                 
                 # TR-NL-DE Route Breakdown
                 tr_nl_breakdown = {
-                    'Bileşen': ['Ham Maliyet', 'Unit In', 'Box In', 'Pick Pack', 'Storage', 'Fedex', 'NE-DE Navlun', 'Reklam', f'Vergi ({params["vergi_yuzdesi"]}%)', f'Pazaryeri ({params["pazaryeri_kesintisi"]}%)'],
+                    'Bileşen': ['Ham Maliyet', 'Unit In', 'Box In', 'Pick Pack', 'Storage', 'Fedex', 'NL-DE Navlun', 'Reklam', f'Vergi ({params["vergi_yuzdesi"]}%)', f'Pazaryeri ({params["pazaryeri_kesintisi"]}%)'],
                     'TR→NL→DE (€)': [
                         clean_euro_value(selected_row['ham_maliyet_euro']),
                         clean_euro_value(selected_row['unit_in']),
@@ -719,6 +831,52 @@ def main():
                                     st.rerun()
                                 else:
                                     st.warning("Güncellenecek satır bulunamadı.")
+                                    
+                # Fiyat simülasyonu
+                st.markdown("---")
+                st.subheader("🧪 Fiyat Simülasyonu")
+                sim_satis_fiyati = st.number_input(
+                    "Simüle Edilen Satış Fiyatı (€)",
+                    min_value=0.0,
+                    value=float(satis_fiyati),
+                    step=0.01,
+                    help="Bu fiyatla kâr ve kâr yüzdesini anında görün (kaydetmez)"
+                )
+                row_sim = selected_row.copy()
+                row_sim['fiyat'] = sim_satis_fiyati
+                with st.spinner('Simülasyon hesaplanıyor...'):
+                    hesaplama_sim = calculate_total_cost(row_sim, params)
+                kar_sim = sim_satis_fiyati - hesaplama_sim['son_maliyet']
+                kar_pct_sim = (kar_sim / sim_satis_fiyati * 100) if sim_satis_fiyati > 0 else 0.0
+                scol1, scol2, scol3, scol4 = st.columns(4)
+                with scol1:
+                    st.metric("Sim. Satış Fiyatı", f"€{sim_satis_fiyati:.2f}")
+                with scol2:
+                    st.metric("Sim. Son Maliyet", f"€{hesaplama_sim['son_maliyet']:.2f}")
+                with scol3:
+                    st.metric("Sim. Kâr", f"€{kar_sim:.2f}")
+                with scol4:
+                    st.metric("Sim. Kâr %", f"{kar_pct_sim:.1f}%")
+                # Simülasyon için kategori rozeti
+                sim_kategori = ""
+                bg_sim, fg_sim = "#ffffff", "#333333"
+                if kar_sim < 0:
+                    sim_kategori, bg_sim, fg_sim = "Zararlı", "#ffe6e6", "#a10000"
+                elif kar_pct_sim < 10:
+                    sim_kategori, bg_sim, fg_sim = "Çok Düşük", "#fff3e0", "#8a6d3b"
+                elif kar_pct_sim < 20:
+                    sim_kategori, bg_sim, fg_sim = "Düşük", "#fffde7", "#8a6d3b"
+                elif kar_pct_sim < 30:
+                    sim_kategori, bg_sim, fg_sim = "Orta", "#e8f5e9", "#1b5e20"
+                elif kar_pct_sim <= 40:
+                    sim_kategori, bg_sim, fg_sim = "Yüksek", "#dcedc8", "#33691e"
+                else:
+                    sim_kategori, bg_sim, fg_sim = "Çok Yüksek", "#c8e6c9", "#1b5e20"
+                st.markdown(
+                    f"<div style='margin-top:-8px;'><span style='background:{bg_sim};color:{fg_sim};padding:3px 10px;border-radius:12px;font-size:0.9em;'>Simülasyon Kategorisi: {sim_kategori} | Rota: {hesaplama_sim['optimal_route']}</span></div>",
+                    unsafe_allow_html=True
+                )
+
 
                 # ROI bazlı fiyat belirleme
                 st.markdown("---")

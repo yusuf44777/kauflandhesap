@@ -26,8 +26,8 @@ Kaufland pazar yerindeki ürünleriniz için doğru satış fiyatını belirleme
 ## Parametreler (Yan Panel)
 
 - Reklam maliyeti (€): Ürün başına sabit reklam tutarı (opsiyonel ancak kârlılıkta etkili).
-- Pazar yeri kesintisi (%): Platform komisyon oranı (ör. 15).
-- Vergi (%): Ürünün vergisel yükü (ör. 20).
+- Pazar yeri kesintisi (%): Platform komisyon oranı (ör. 22).
+- Vergi (%): Ürünün vergisel yükü (ör. 19).
 
 ## Rotalar ve Maliyet Mantığı
 
@@ -40,8 +40,8 @@ Kaufland pazar yerindeki ürünleriniz için doğru satış fiyatını belirleme
 - Satış fiyatı: Ürünün platformdaki satış fiyatı (kullanıcı girişi).
 - Temel maliyet: Rota bazlı ham maliyet + ilgili navlun/operasyonel kalemler toplamı.
 - Reklam dahil: Temel maliyet + reklam maliyeti.
-- Vergi: Reklam dahil tutar × vergi yüzdesi.
-- Pazar yeri kesintisi: Reklam dahil tutar × kesinti yüzdesi.
+- Vergi: Satış fiyatı × vergi yüzdesi.
+- Pazar yeri kesintisi: Satış fiyatı × kesinti yüzdesi.
 - Son maliyet: Reklam dahil + vergi + pazar yeri kesintisi.
 - Kâr marjı: Satış fiyatı − son maliyet.
 - Kâr marjı %: (Satış fiyatı − son maliyet) / satış fiyatı × 100.
@@ -54,7 +54,7 @@ Kaufland pazar yerindeki ürünleriniz için doğru satış fiyatını belirleme
 
 - Özet metrikler: Ortalama satış fiyatı, ortalama kâr, ortalama kâr %, kârlı ürün sayısı.
 - Gelişmiş filtreler: Ürün adına göre arama, kâr durum filtresi; satış fiyatı aralığı, kâr % aralığı ve rota (TR→NL→DE / TR→DE) çoklu seçimi.
-- Koşullu renklendirme: Negatif kâr hücreleri kırmızı, kâr % <10 sarı ile vurgulanır.
+- Koşullu renklendirme: Negatif kâr hücreleri kırmızı, kâr % <20 sarı ile vurgulanır.
 - Satır içi düzenleme: "Tabloda düzenlemeyi etkinleştir" ile fiyat ve maliyet alanlarını düzenleyin; "Değişiklikleri Kaydet" ile CSV güncellenir.
 - Silme: EAN seçerek bir veya birden fazla ürünü listeden silebilirsiniz.
 - Tablo: Satış fiyatı, her iki rota maliyeti, optimal rota, son maliyet, kâr ve kâr %.
@@ -64,6 +64,7 @@ Kaufland pazar yerindeki ürünleriniz için doğru satış fiyatını belirleme
 
 - Zorunlu alanlar: Ürün adı, satış fiyatı, ham maliyet.
 - Opsiyonel alanlar: EAN, IWASKU, desi, navlun/operasyon kalemleri.
+- TR→DE navlun: Desi değerine göre otomatik hesaplanır; kullanıcı girişi gerekmez. Desi için 0.5 adım ve nokta formatı kullanın (örn. 9.0, 9.5).
 - Not: Gelişmiş operasyon kalemleri (unit_in, box_in, pick_pack, storage, fedex vb.) formda 0 girilebilir; detay için CSV import tercih edilebilir.
 - Ekleme sonrası: Ürün listeye dahil olur; metrikler otomatik güncellenir.
 
@@ -73,7 +74,8 @@ Kaufland pazar yerindeki ürünleriniz için doğru satış fiyatını belirleme
 - Rota karşılaştırması: Her iki rota için temel maliyet, reklam dahil, vergi, kesinti ve “Son Maliyet”.
 - Optimal seçim: En iyi rota, optimal maliyet ve tasarruf tutarı.
 - Bileşen tablosu: Rota bazında maliyet kalemlerinin kırılımı.
-- Özet ve uyarılar: Satış fiyatı, toplam maliyet, kâr, kâr %. Zararsa kırmızı uyarı; kâr % < 10 ise dikkat uyarısı.
+- Not: TR→DE navlun, desi→fiyat tablosuna göre belirlenir. Desi tablo ile eşleşmezse uyarı gösterilir.
+- Özet ve uyarılar: Satış fiyatı, toplam maliyet, kâr, kâr %. Zararsa kırmızı uyarı; kâr % < 20 ise dikkat uyarısı.
 
 ### Export / Import
 
@@ -86,7 +88,7 @@ Kaufland pazar yerindeki ürünleriniz için doğru satış fiyatını belirleme
 
 - Genel istatistikler: Toplam ürün, kârlı/zararlı ürün sayısı, ortalama kâr %.
 - Sıralamalar: En kârlı 5 ve en zararlı 5 ürün.
-- Dağılım: Kâr % aralıklarına göre sınıflandırma (Çok Yüksek >30, Yüksek 20–30, Orta 10–20, Düşük 0–10, Zararlı <0) ve grafik.
+- Dağılım: Kâr % aralıklarına göre sınıflandırma (Çok Yüksek >40, Yüksek 30–40, Orta 20–30, Düşük 10–20, Çok Düşük 0–10, Zararlı <0) ve grafik.
 - Öneriler: Zararlı ürün sayısı, düşük kâr sayısı ve genel kârlılık durumuna göre rehber mesajlar.
 - Pareto: Kâr katkısına göre ilk %20 ürün listelenir; Pareto kârı ve toplam kârdaki payı metrik olarak gösterilir.
 - Rota kazanımı: “Hollanda üzerinden tasarruf” ve “Direkt rota avantajı” toplamları + her rota için ürün sayısı metrikleri.
@@ -102,7 +104,7 @@ Kaufland pazar yerindeki ürünleriniz için doğru satış fiyatını belirleme
 
 - Parametre güncelliği: Reklam ve kesinti oranlarını sözleşme/performans verilerine göre düzenli güncelleyin.
 - Rota karşılaştırması: “Tasarruf” metriği anlamlıysa tedarik/lojistik kararı için tetikleyici olarak kullanın.
-- Düşük kâr alarmı: Kâr % < 10 görünen ürünleri fiyat veya maliyet kalemleri açısından gözden geçirin.
+- Düşük kâr alarmı: Kâr % < 20 görünen ürünleri fiyat veya maliyet kalemleri açısından gözden geçirin.
 - CSV şablonu: Export edilen CSV yapısını referans alın; sütun adları bire bir eşleşmelidir.
 - EAN benzersizliği: Import sırasında duplikeler EAN ile tespit edilir; en son kayıt saklanır.
 
