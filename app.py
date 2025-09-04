@@ -6,7 +6,10 @@ from datetime import datetime
 import io
 import requests
 from pathlib import Path
-from supabase import create_client, Client
+
+# Google Sheets (kalıcı bulut depolama) için
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Sayfa yapılandırması
 st.set_page_config(
@@ -76,30 +79,57 @@ TR_DE_NAVLUN_BY_DESI = {
 # USD→EUR kur ayarları
 DEFAULT_USD_EUR = 0.92  # Ağ erişimi yoksa yedek kur
 
-# Uygulamada kullanılan temel kolonlar (DB için başlıklar)
-DB_COLUMNS = [
+# Sheets entegrasyonu açık mı?
+def _sheets_enabled():
+    try:
+        return (
+            isinstance(st.secrets.get("gcp_service_account", None), dict)
+            and bool(st.secrets.get("gsheet_id", ""))
+        )
+    except Exception:
+        return False
+
+def _get_gsheet_client():
+    """Google Sheets istemcisini döndürür; başarısızsa None."""
+    if not _sheets_enabled():
+        return None
+    try:
+        sa_info = st.secrets["gcp_service_account"]
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
+        client = gspread.authorize(creds)
+        return client
+    except Exception:
+        return None
+
+def _get_spreadsheet():
+    client = _get_gsheet_client()
+    if not client:
+        return None
+    try:
+        return client.open_by_key(st.secrets["gsheet_id"])
+    except Exception:
+        return None
+
+# Uygulamada kullanılan temel kolonlar (Sheets için başlıklar)
+SHEETS_COLUMNS = [
     'title', 'ean', 'iwasku', 'fiyat', 'ham_maliyet_euro', 'ham_maliyet_usd', 'desi',
     'unit_in', 'box_in', 'pick_pack', 'storage', 'fedex',
     'tr_ne_navlun', 'ne_de_navlun', 'express_kargo', 'ddp', 'tr_de_navlun', 'reklam'
 ]
 
-def _supabase_enabled():
-    try:
-        url = st.secrets.get("supabase_url") or st.secrets.get("SUPABASE_URL")
-        key = st.secrets.get("supabase_key") or st.secrets.get("SUPABASE_ANON_KEY")
-        return bool(url and key)
-    except Exception:
-        return False
-
-def _get_supabase_client():
-    if not _supabase_enabled():
+def _ensure_products_worksheet(ss):
+    """Spreadsheet içinde 'products' sayfasını hazırlar ve döndürür."""
+    if ss is None:
         return None
     try:
-        url = st.secrets.get("supabase_url") or st.secrets.get("SUPABASE_URL")
-        key = st.secrets.get("supabase_key") or st.secrets.get("SUPABASE_ANON_KEY")
-        return create_client(url, key)
+        ws = ss.worksheet("products")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = ss.add_worksheet(title="products", rows="2000", cols=str(len(SHEETS_COLUMNS) + 5))
+        ws.update([SHEETS_COLUMNS])
     except Exception:
         return None
+    return ws
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_usd_eur_rate_live():
@@ -197,105 +227,53 @@ def save_json_data(data):
 
 @st.cache_data(show_spinner=False)
 def load_csv_data():
-    """Verileri yükler (Supabase varsa oradan; yoksa yerel CSV'den)."""
-    # Öncelik: Supabase
-    if _supabase_enabled():
-        sb = _get_supabase_client()
-        if sb is not None:
-            try:
-                res = sb.table("products").select("*").execute()
-                rows = res.data or []
-                df = pd.DataFrame(rows)
-                if df.empty:
-                    return pd.DataFrame(columns=DB_COLUMNS)
-                # Eksik kolonları tamamla ve sıralamayı koru
-                for c in DB_COLUMNS:
-                    if c not in df.columns:
-                        df[c] = ""
-                df = df[DB_COLUMNS]
-                return df
-            except Exception:
-                return pd.DataFrame(columns=DB_COLUMNS)
+    """Verileri yükler (Sheets varsa Sheets'ten; yoksa yerel CSV'den)."""
+    # Öncelik: Google Sheets
+    if _sheets_enabled():
+        ss = _get_spreadsheet()
+        ws = _ensure_products_worksheet(ss)
+        if ws is None:
+            return pd.DataFrame(columns=SHEETS_COLUMNS)
+        try:
+            rows = ws.get_all_records()
+            if not rows:
+                return pd.DataFrame(columns=SHEETS_COLUMNS)
+            df = pd.DataFrame(rows)
+            # Eksik kolonları tamamla ve sıralamayı koru
+            for c in SHEETS_COLUMNS:
+                if c not in df.columns:
+                    df[c] = ""
+            df = df[SHEETS_COLUMNS]
+            return df
+        except Exception:
+            return pd.DataFrame(columns=SHEETS_COLUMNS)
 
     # Geriye dönüş: yerel CSV
     if os.path.exists(CSV_FILE):
         try:
             df = pd.read_csv(CSV_FILE)
-            # Eksik kolonları garantiye al
-            for c in DB_COLUMNS:
-                if c not in df.columns:
-                    df[c] = ""
-            df = df[[c for c in DB_COLUMNS if c in df.columns]]
             return df
         except Exception:
-            return pd.DataFrame(columns=DB_COLUMNS)
-    return pd.DataFrame(columns=DB_COLUMNS)
+            return pd.DataFrame(columns=SHEETS_COLUMNS)
+    return pd.DataFrame(columns=SHEETS_COLUMNS)
 
 def persist_df(df: pd.DataFrame):
-    """DataFrame'i kalıcı depoya yazar ve cache'i temizler.
-    Supabase varsa tabloyu yeni verilerle eşitler; yoksa CSV'ye yazar.
-    """
-    if _supabase_enabled():
-        sb = _get_supabase_client()
-        if sb is not None:
+    """DataFrame'i kalıcı depoya yazar ve cache'i temizler."""
+    if _sheets_enabled():
+        ss = _get_spreadsheet()
+        ws = _ensure_products_worksheet(ss)
+        if ws is not None:
             try:
-                # Standart kolon setini uygula ve stringleştir
                 df2 = df.copy()
-                for c in DB_COLUMNS:
+                for c in SHEETS_COLUMNS:
                     if c not in df2.columns:
                         df2[c] = ""
-                df2 = df2[DB_COLUMNS]
-                df2 = df2.fillna("")
-                # Supabase şemasındaki text kolonlarla uyum için değerleri string'e çevir
-                try:
-                    df2 = df2.astype(str)
-                except Exception:
-                    pass
-
-                # Mevcut anahtarları al (EAN ve Title)
-                try:
-                    existing = sb.table("products").select("ean,title").execute().data or []
-                except Exception:
-                    existing = []
-                existing_eans = {str(r.get("ean")) for r in existing if str(r.get("ean", "")).strip() != ""}
-                existing_titles = {str(r.get("title")) for r in existing if str(r.get("title", "")).strip() != ""}
-
-                # Hedef anahtar kümeleri
-                target_eans = {str(x) for x in df2.get("ean", pd.Series([], dtype=str)).astype(str) if str(x).strip() != ""}
-                target_titles = {str(x) for x in df2.get("title", pd.Series([], dtype=str)).astype(str) if str(x).strip() != ""}
-
-                # Silinmesi gerekenler
-                to_delete_eans = list(existing_eans - target_eans)
-                to_delete_titles = list(existing_titles - target_titles)
-
-                # Sil: önce EAN'a göre, sonra EAN'siz satırlar için title'a göre
-                if to_delete_eans:
-                    sb.table("products").delete().in_("ean", to_delete_eans).execute()
-                if to_delete_titles:
-                    sb.table("products").delete().in_("title", to_delete_titles).execute()
-
-                # Ekle/Güncelle: basit strateji — önce mevcut eşleşenleri sil, sonra toplu insert
-                if target_eans:
-                    sb.table("products").delete().in_("ean", list(target_eans)).execute()
-                if target_titles:
-                    # EAN'siz kayıtlar için title bazlı silme (EAN'lılara dokunmaz)
-                    no_ean_titles = [t for t in target_titles if t]
-                    if no_ean_titles:
-                        sb.table("products").delete().in_("title", no_ean_titles).execute()
-
-                # Insert all rows
-                rows = df2.to_dict(orient="records")
-                if rows:
-                    # Supabase hatalarında paket büyüklüğü sorun olursa parçalayın
-                    chunk = 500
-                    for i in range(0, len(rows), chunk):
-                        sb.table("products").insert(rows[i:i+chunk]).execute()
+                df2 = df2[SHEETS_COLUMNS]
+                values = [df2.columns.tolist()] + df2.fillna("").astype(str).values.tolist()
+                ws.clear()
+                ws.update(values)
             except Exception:
-                # Sessiz düş; CSV'ye yaz
-                try:
-                    df.to_csv(CSV_FILE, index=False)
-                except Exception:
-                    pass
+                pass
     else:
         try:
             df.to_csv(CSV_FILE, index=False)
@@ -748,16 +726,14 @@ def main():
                     if match_key is not None:
                         st.caption(f"Eşleşen desi (tablo): {match_key:.1f}")
             
-            # Otomatik varsayılanlar
+            # Otomatik olarak 0 değeri atanacak alanlar
             unit_in = 0.0
             box_in = 0.0
             pick_pack = 0.0
             storage = 0.0
             fedex = 0.0
-            # TR→DE navlun (tablo) Express Kargo'da saklanır
-            express_kargo = float(tr_de_navlun_auto or 0.0)
-            # DDP varsayılanı her zaman 5
-            ddp = 5.0
+            express_kargo = 0.0
+            ddp = 0.0
             
             submitted = st.form_submit_button("Ürün Ekle", type="primary")
             
@@ -1257,7 +1233,7 @@ def main():
                             if 'ean' in combined_df.columns:
                                 combined_df = combined_df.drop_duplicates(subset=['ean'], keep='last')
                         
-                        persist_df(combined_df)
+                        combined_df.to_csv(CSV_FILE, index=False)
                         try:
                             load_csv_data.clear()
                         except Exception:
