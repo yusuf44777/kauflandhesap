@@ -48,6 +48,26 @@ Uygulamaya şu linkten erişebilirsiniz: [Kaufland Fiyat Hesaplama](https://kauf
    streamlit run app.py
    ```
 
+## ☁️ Supabase Kalıcı Depolama (Önerilen)
+
+Aşağıdaki adımlarla verilerinizi Supabase üzerinde kalıcı tutabilirsiniz. Bu sayede tarayıcı kapansa bile tüm eklemeler/düzenlemeler korunur.
+
+1. Supabase projesi oluşturun: app.supabase.com → New project
+2. `supabase.sql` dosyasındaki sorguyu çalıştırın:
+   - Supabase Studio → SQL → New query → `supabase.sql` içeriğini yapıştırın → Run
+3. API bilgilerini alın:
+   - Project Settings → API → `Project URL` ve `anon` key
+4. Streamlit Secrets tanımlayın:
+   - Streamlit Cloud → App → Settings → Secrets (veya yerelde `.streamlit/secrets.toml`)
+   - Aşağıdaki anahtarları ekleyin:
+     - `supabase_url = "https://<PROJECT-REF>.supabase.co"`
+     - `supabase_key = "<ANON-KEY>"`
+5. Uygulamayı yeniden başlatın. Artık ürün verileri `products` tablosuna yazılır/okunur.
+
+Notlar:
+- Kod, Supabase secrets yoksa otomatik olarak yerel CSV’ye döner. Cloud ortamında kalıcılık için secrets zorunludur.
+- `products` şeması metinsel değerlerle (örn. `€12.34`) uyumlu olacak şekilde text kolonlar kullanır. İsterseniz ileride sayısal kolonlara geçirilebilir.
+
 5. Tarayıcınızda `http://localhost:8501` adresine gidin.
 
 ## 📊 Kullanım

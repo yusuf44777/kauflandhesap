@@ -88,7 +88,10 @@ def _supabase_enabled():
         url = st.secrets.get("supabase_url") or st.secrets.get("SUPABASE_URL")
         key = st.secrets.get("supabase_key") or st.secrets.get("SUPABASE_ANON_KEY")
         return bool(url and key)
-    except Exception:
+    except Exception as e:
+        # Debug için hata detaylarını log'la (production'da kaldırılabilir)
+        if st.session_state.get('debug_mode', False):
+            st.error(f"Supabase secrets yüklenemedi: {str(e)}")
         return False
 
 def _get_supabase_client():
@@ -98,7 +101,10 @@ def _get_supabase_client():
         url = st.secrets.get("supabase_url") or st.secrets.get("SUPABASE_URL")
         key = st.secrets.get("supabase_key") or st.secrets.get("SUPABASE_ANON_KEY")
         return create_client(url, key)
-    except Exception:
+    except Exception as e:
+        # Debug için hata detaylarını log'la
+        if st.session_state.get('debug_mode', False):
+            st.error(f"Supabase client oluşturulamadı: {str(e)}")
         return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -246,7 +252,7 @@ def persist_df(df: pd.DataFrame):
                         df2[c] = ""
                 df2 = df2[DB_COLUMNS]
                 df2 = df2.fillna("")
-                # Supabase şemasındaki text kolonlarla uyum için değerleri string'e çevir
+                # Supabase şemasında metin kolonları kullanıldığı için string'e çevir
                 try:
                     df2 = df2.astype(str)
                 except Exception:
@@ -457,6 +463,32 @@ def main():
         st.markdown("**🔗 Faydalı Linkler:**")
         st.markdown("📝 [Title Description Generator](https://kauflandiwa.streamlit.app/)")
         st.markdown("*Kaufland için başlık ve açıklama oluşturun*")
+        
+        st.markdown("---")
+        # Debug paneli
+        with st.expander("🔧 Debug Panel"):
+            st.session_state['debug_mode'] = st.checkbox("Debug Mode", value=False)
+            
+            # Supabase durumu
+            sb_enabled = _supabase_enabled()
+            sb_client = _get_supabase_client()
+            
+            st.write("**Supabase Durumu:**")
+            if sb_enabled:
+                st.success("✅ Secrets yüklendi")
+                if sb_client:
+                    st.success("✅ Client oluşturuldu")
+                    # Bağlantı testi
+                    if st.button("🧪 Bağlantı Testi"):
+                        try:
+                            result = sb_client.table("products").select("count", count="exact").execute()
+                            st.success(f"✅ Bağlantı başarılı! Toplam kayıt: {result.count}")
+                        except Exception as e:
+                            st.error(f"❌ Bağlantı hatası: {str(e)}")
+                else:
+                    st.error("❌ Client oluşturulamadı")
+            else:
+                st.error("❌ Secrets eksik - secrets.toml dosyasını kontrol edin")
     
     # Ana tabs
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -748,15 +780,15 @@ def main():
                     if match_key is not None:
                         st.caption(f"Eşleşen desi (tablo): {match_key:.1f}")
             
-            # Otomatik varsayılanlar
+            # Otomatik olarak varsayılan değerler
             unit_in = 0.0
             box_in = 0.0
             pick_pack = 0.0
             storage = 0.0
             fedex = 0.0
-            # TR→DE navlun (tablo) Express Kargo'da saklanır
+            # TR→DE navlun tablo değerini Express Kargo altında sakla
             express_kargo = float(tr_de_navlun_auto or 0.0)
-            # DDP varsayılanı her zaman 5
+            # DDP her zaman 5
             ddp = 5.0
             
             submitted = st.form_submit_button("Ürün Ekle", type="primary")
