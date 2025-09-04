@@ -17,16 +17,12 @@ create table if not exists public.products (
   ham_maliyet_euro text,
   ham_maliyet_usd text,
   desi text,
-  unit_in text,
-  box_in text,
-  pick_pack text,
-  storage text,
-  fedex text,
   tr_ne_navlun text,
   ne_de_navlun text,
+  kara_tr_de_navlun text,
   express_kargo text,
   ddp text,
-  tr_de_navlun text,
+  hava_tr_de_navlun text,
   reklam text
 );
 

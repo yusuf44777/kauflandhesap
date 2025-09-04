@@ -57,14 +57,50 @@ def migrate_csv_to_supabase():
     # Eksik kolonları tamamla
     required_columns = [
         'title', 'ean', 'iwasku', 'fiyat', 'ham_maliyet_euro', 'ham_maliyet_usd', 'desi',
-        'unit_in', 'box_in', 'pick_pack', 'storage', 'fedex',
-        'tr_ne_navlun', 'ne_de_navlun', 'express_kargo', 'ddp', 'tr_de_navlun', 'reklam'
+        'tr_ne_navlun', 'ne_de_navlun', 'express_kargo', 'ddp', 'hava_tr_de_navlun', 'kara_tr_de_navlun', 'reklam'
     ]
     
     for col in required_columns:
         if col not in df.columns:
             df[col] = ""
     
+    # Geriye dönük eşleme: eski kolonlardan yeni kolonlara
+    if 'hava_tr_de_navlun' not in df.columns:
+        if 'tr_de_navlun' in df.columns:
+            df['hava_tr_de_navlun'] = df['tr_de_navlun']
+        else:
+            # express + ddp varsa bunlardan üret
+            try:
+                def _clean(v):
+                    s = str(v)
+                    s = s.replace('€','').replace(',','.')
+                    try:
+                        return float(s)
+                    except:
+                        return 0.0
+                df['hava_tr_de_navlun'] = [
+                    f"€{(_clean(df.get('express_kargo', 0).iloc[i]) + _clean(df.get('ddp', 0).iloc[i])):.2f}"
+                    for i in range(len(df))
+                ]
+            except Exception:
+                df['hava_tr_de_navlun'] = ""
+    # kara_tr_de_navlun = tr_ne_navlun + ne_de_navlun
+    try:
+        def _clean2(v):
+            s = str(v)
+            s = s.replace('€','').replace(',','.')
+            try:
+                return float(s)
+            except:
+                return 0.0
+        df['kara_tr_de_navlun'] = [
+            f"€{(_clean2(df.get('tr_ne_navlun', 0).iloc[i]) + _clean2(df.get('ne_de_navlun', 0).iloc[i])):.2f}"
+            for i in range(len(df))
+        ]
+    except Exception:
+        if 'kara_tr_de_navlun' not in df.columns:
+            df['kara_tr_de_navlun'] = ""
+
     # Sadece gerekli kolonları al
     df_clean = df[required_columns].fillna("")
     

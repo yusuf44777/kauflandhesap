@@ -77,10 +77,13 @@ TR_DE_NAVLUN_BY_DESI = {
 DEFAULT_USD_EUR = 0.92  # Ağ erişimi yoksa yedek kur
 
 # Uygulamada kullanılan temel kolonlar (DB için başlıklar)
+# Not: Eski `tr_de_navlun` alanı artık `hava_tr_de_navlun` olarak tutulur.
+# `unit_in`, `box_in`, `pick_pack`, `storage`, `fedex` alanları kaldırıldı.
 DB_COLUMNS = [
     'title', 'ean', 'iwasku', 'fiyat', 'ham_maliyet_euro', 'ham_maliyet_usd', 'desi',
-    'unit_in', 'box_in', 'pick_pack', 'storage', 'fedex',
-    'tr_ne_navlun', 'ne_de_navlun', 'express_kargo', 'ddp', 'tr_de_navlun', 'reklam'
+    'tr_ne_navlun', 'ne_de_navlun', 'kara_tr_de_navlun',
+    'express_kargo', 'ddp', 'hava_tr_de_navlun',
+    'reklam'
 ]
 
 def _supabase_enabled():
@@ -214,6 +217,9 @@ def load_csv_data():
                 df = pd.DataFrame(rows)
                 if df.empty:
                     return pd.DataFrame(columns=DB_COLUMNS)
+                # Eski veriden yeni kolona geriye dönük eşleme
+                if 'hava_tr_de_navlun' not in df.columns and 'tr_de_navlun' in df.columns:
+                    df['hava_tr_de_navlun'] = df['tr_de_navlun']
                 # Eksik kolonları tamamla ve sıralamayı koru
                 for c in DB_COLUMNS:
                     if c not in df.columns:
@@ -227,6 +233,9 @@ def load_csv_data():
     if os.path.exists(CSV_FILE):
         try:
             df = pd.read_csv(CSV_FILE)
+            # Eski veriden yeni kolona geriye dönük eşleme
+            if 'hava_tr_de_navlun' not in df.columns and 'tr_de_navlun' in df.columns:
+                df['hava_tr_de_navlun'] = df['tr_de_navlun']
             # Eksik kolonları garantiye al
             for c in DB_COLUMNS:
                 if c not in df.columns:
@@ -245,11 +254,36 @@ def persist_df(df: pd.DataFrame):
         sb = _get_supabase_client()
         if sb is not None:
             try:
-                # Standart kolon setini uygula ve stringleştir
+                # Standart kolon setini uygula ve türetilmiş alanları güncelle
                 df2 = df.copy()
+                # Backfill: eski kolondan yeni kolona
+                if 'hava_tr_de_navlun' not in df2.columns and 'tr_de_navlun' in df2.columns:
+                    df2['hava_tr_de_navlun'] = df2['tr_de_navlun']
                 for c in DB_COLUMNS:
                     if c not in df2.columns:
                         df2[c] = ""
+                # Türetilmiş alanlar: kara_tr_de_navlun = tr_ne_navlun + ne_de_navlun
+                try:
+                    df2['kara_tr_de_navlun'] = (
+                        df2.apply(lambda r: clean_euro_value(r.get('tr_ne_navlun', 0)) +
+                                              clean_euro_value(r.get('ne_de_navlun', 0)), axis=1)
+                        .apply(lambda v: f"€{float(v):.2f}")
+                    )
+                except Exception:
+                    pass
+                # Türetilmiş alan: hava_tr_de_navlun = express_kargo + ddp (varsa)
+                try:
+                    sums = (
+                        df2.apply(lambda r: clean_euro_value(r.get('express_kargo', 0)) +
+                                              clean_euro_value(r.get('ddp', 0)), axis=1)
+                    )
+                    # Yalnızca toplam > 0 ise üzerine yaz
+                    df2['hava_tr_de_navlun'] = [
+                        f"€{float(s):.2f}" if float(s) > 0 else (r if isinstance(r, str) and r != '' else f"€0.00")
+                        for s, r in zip(sums, df2.get('hava_tr_de_navlun', ''))
+                    ]
+                except Exception:
+                    pass
                 df2 = df2[DB_COLUMNS]
                 df2 = df2.fillna("")
                 # Supabase şemasında metin kolonları kullanıldığı için string'e çevir
@@ -333,16 +367,14 @@ def calculate_total_cost(row, params):
     satis_fiyati = clean_euro_value(row.get('fiyat', 0))
     
     # Maliyet bileşenleri
-    unit_in = clean_euro_value(row.get('unit_in', 0))
-    box_in = clean_euro_value(row.get('box_in', 0))
-    pick_pack = clean_euro_value(row.get('pick_pack', 0))
-    storage = clean_euro_value(row.get('storage', 0))
-    fedex = clean_euro_value(row.get('fedex', 0))
     ne_de_navlun = clean_euro_value(row.get('ne_de_navlun', 0))  # NL→DE navlun
-    tr_ne_navlun_field = clean_euro_value(row.get('tr_ne_navlun', 0))  # TR→NL toplam navlun (varsa)
+    tr_ne_navlun_field = clean_euro_value(row.get('tr_ne_navlun', 0))  # TR→NL toplam navlun
     express_kargo = clean_euro_value(row.get('express_kargo', 0))
     ddp = clean_euro_value(row.get('ddp', 0))
-    tr_de_navlun_field = clean_euro_value(row.get('tr_de_navlun', 0))  # TR→DE toplam navlun (varsa)
+    # TR→DE toplam navlun (hava) — yeni alan adı, eskiye geriye dönük destek
+    hava_tr_de_navlun_field = clean_euro_value(
+        row.get('hava_tr_de_navlun', row.get('tr_de_navlun', 0))
+    )
     desi_val = clean_euro_value(row.get('desi', 0))
     tr_de_navlun_from_table = get_tr_de_navlun_by_desi(desi_val) or 0.0
     
@@ -350,9 +382,8 @@ def calculate_total_cost(row, params):
     reklam_maliyeti = params['reklam_maliyeti']
     
     # ROTA 1: TR → NL → DE
-    # TR→NL segmenti: detay bileşenler varsa topla; yoksa tek alanı kullan
-    tr_ne_navlun_hesaplanan = unit_in + box_in + pick_pack + storage + fedex
-    tr_ne_navlun_final = tr_ne_navlun_hesaplanan if tr_ne_navlun_hesaplanan > 0 else tr_ne_navlun_field
+    # TR→NL segmenti: direkt girilen toplam değer kullanılır
+    tr_ne_navlun_final = tr_ne_navlun_field
     tr_nl_de_temel_maliyet = ham_maliyet + tr_ne_navlun_final + ne_de_navlun
     tr_nl_de_reklam_dahil = tr_nl_de_temel_maliyet + reklam_maliyeti
     # Vergi ve pazar yeri kesintisi satış fiyatı üzerinden hesaplanır
@@ -361,7 +392,7 @@ def calculate_total_cost(row, params):
     tr_nl_de_son_maliyet = tr_nl_de_reklam_dahil + tr_nl_de_vergi + tr_nl_de_pazaryeri_kesinti
     
     # ROTA 2: TR → DE (Direkt)
-    # TR→DE segmenti: detay bileşenler varsa topla; yoksa tek alanı kullan
+    # TR→DE segmenti: hava (express_kargo + ddp) veya tablo değeri
     tr_de_navlun_hesaplanan = express_kargo + ddp
     # Öncelik tabloya göre otomatik navlun; yoksa mevcut alanlara düş
     if tr_de_navlun_from_table > 0:
@@ -369,7 +400,7 @@ def calculate_total_cost(row, params):
     elif tr_de_navlun_hesaplanan > 0:
         tr_de_navlun_final = tr_de_navlun_hesaplanan
     else:
-        tr_de_navlun_final = tr_de_navlun_field
+        tr_de_navlun_final = hava_tr_de_navlun_field
     tr_de_temel_maliyet = ham_maliyet + tr_de_navlun_final
     tr_de_reklam_dahil = tr_de_temel_maliyet + reklam_maliyeti
     # Vergi ve pazar yeri kesintisi satış fiyatı üzerinden hesaplanır
@@ -392,7 +423,7 @@ def calculate_total_cost(row, params):
         
         # TR→DE Direkt Rota
         'tr_de_temel_maliyet': tr_de_temel_maliyet,
-        'tr_de_navlun': tr_de_navlun_final,
+        'hava_tr_de_navlun': tr_de_navlun_final,
         'tr_de_reklam_dahil': tr_de_reklam_dahil,
         'tr_de_vergi': tr_de_vergi,
         'tr_de_pazaryeri_kesinti': tr_de_pazaryeri_kesinti,
@@ -516,7 +547,7 @@ def main():
                     hesaplama_sonuclari.append(hesaplama)
                     try:
                         ham = clean_euro_value(row.get('ham_maliyet_euro', 0))
-                        navlun = hesaplama['tr_nl_de_navlun'] if hesaplama['optimal_route'] == "TR→NL→DE" else hesaplama['tr_de_navlun']
+                        navlun = hesaplama['tr_nl_de_navlun'] if hesaplama['optimal_route'] == "TR→NL→DE" else hesaplama['hava_tr_de_navlun']
                         denom = ham + navlun
                         roi_val = ((df.at[index, 'Satış Fiyatı'] - hesaplama['optimal_cost']) / denom) if denom > 0 else 0.0
                     except Exception:
@@ -666,8 +697,7 @@ def main():
                 if st.toggle("Tabloda düzenlemeyi etkinleştir", value=False, help="Fiyat ve maliyet alanlarını satır içi düzenleyin"):
                     editable_cols = [
                         'fiyat', 'ham_maliyet_euro', 'reklam',
-                        'unit_in', 'box_in', 'pick_pack', 'storage', 'fedex',
-                        'ne_de_navlun', 'express_kargo', 'ddp'
+                        'tr_ne_navlun', 'ne_de_navlun', 'express_kargo', 'ddp'
                     ]
                     present_edit_cols = [c for c in editable_cols if c in filtered_df.columns]
                     edit_base_cols = ['title', 'ean'] + present_edit_cols
@@ -776,16 +806,11 @@ def main():
                 tr_de_navlun_auto = get_tr_de_navlun_by_desi(desi)
                 match_key = find_nearest_desi_key(desi)
                 if tr_de_navlun_auto is not None:
-                    st.metric("TR-DE Navlun (Otomatik)", f"€{tr_de_navlun_auto:.2f}")
+                    st.metric("Hava TR-DE Navlun (Otomatik)", f"€{tr_de_navlun_auto:.2f}")
                     if match_key is not None:
                         st.caption(f"Eşleşen desi (tablo): {match_key:.1f}")
             
             # Otomatik olarak varsayılan değerler
-            unit_in = 0.0
-            box_in = 0.0
-            pick_pack = 0.0
-            storage = 0.0
-            fedex = 0.0
             # TR→DE navlun tablo değerini Express Kargo altında sakla
             express_kargo = float(tr_de_navlun_auto or 0.0)
             # DDP her zaman 5
@@ -803,16 +828,12 @@ def main():
                         'fiyat': f"€{fiyat:.2f}",
                         'ham_maliyet_euro': round(ham_maliyet_eur_val, 2),
                         'desi': desi,
-                        'unit_in': f"€{unit_in:.2f}",
-                        'box_in': f"€{box_in:.2f}",
-                        'pick_pack': f"€{pick_pack:.2f}",
-                        'storage': f"€{storage:.2f}",
-                        'fedex': f"€{fedex:.2f}",
                         'tr_ne_navlun': f"€{tr_ne_navlun:.2f}",
                         'ne_de_navlun': f"€{ne_de_navlun:.2f}",
+                        'kara_tr_de_navlun': f"€{(tr_ne_navlun + ne_de_navlun):.2f}",
                         'express_kargo': f"€{express_kargo:.2f}",
                         'ddp': f"€{ddp:.2f}",
-                        'tr_de_navlun': f"€{(tr_de_navlun_auto or 0.0):.2f}",
+                        'hava_tr_de_navlun': f"€{(float(express_kargo) + float(ddp)):.2f}",
                         'reklam': f"€{params['reklam_maliyeti']:.2f}"
                     }
                     if ham_maliyet_usd_val is not None:
@@ -935,14 +956,10 @@ def main():
                 
                 # TR-NL-DE Route Breakdown
                 tr_nl_breakdown = {
-                    'Bileşen': ['Ham Maliyet', 'Unit In', 'Box In', 'Pick Pack', 'Storage', 'Fedex', 'NL-DE Navlun', 'Reklam', f'Vergi ({params["vergi_yuzdesi"]}%)', f'Pazaryeri ({params["pazaryeri_kesintisi"]}%)'],
+                    'Bileşen': ['Ham Maliyet', 'TR-NL Navlun', 'NL-DE Navlun', 'Reklam', f'Vergi ({params["vergi_yuzdesi"]}%)', f'Pazaryeri ({params["pazaryeri_kesintisi"]}%)'],
                     'TR→NL→DE (€)': [
                         clean_euro_value(selected_row['ham_maliyet_euro']),
-                        clean_euro_value(selected_row['unit_in']),
-                        clean_euro_value(selected_row['box_in']),
-                        clean_euro_value(selected_row['pick_pack']),
-                        clean_euro_value(selected_row['storage']),
-                        clean_euro_value(selected_row['fedex']),
+                        clean_euro_value(selected_row['tr_ne_navlun']),
                         clean_euro_value(selected_row['ne_de_navlun']),
                         hesaplama['reklam_maliyeti'],
                         hesaplama['tr_nl_de_vergi'],
@@ -950,8 +967,8 @@ def main():
                     ],
                     'TR→DE (€)': [
                         clean_euro_value(selected_row['ham_maliyet_euro']),
-                        0, 0, 0, 0, 0,  # TR-DE rotasında bu maliyetler yok
-                        hesaplama['tr_de_navlun'],
+                        0,  # TR-DE rotasında TR-NL yok
+                        hesaplama['hava_tr_de_navlun'],
                         hesaplama['reklam_maliyeti'],
                         hesaplama['tr_de_vergi'],
                         hesaplama['tr_de_pazaryeri_kesinti']
@@ -1067,14 +1084,14 @@ def main():
                         roi_navlun = hesaplama_sim.get('tr_nl_de_navlun', 0.0)
                         roi_son_maliyet = hesaplama_sim.get('tr_nl_de_son_maliyet', 0.0)
                     elif roi_route_choice == "TR→DE":
-                        roi_navlun = hesaplama_sim.get('tr_de_navlun', 0.0)
+                        roi_navlun = hesaplama_sim.get('hava_tr_de_navlun', 0.0)
                         roi_son_maliyet = hesaplama_sim.get('tr_de_son_maliyet', 0.0)
                     else:
                         if hesaplama_sim.get('optimal_route') == "TR→NL→DE":
                             roi_navlun = hesaplama_sim.get('tr_nl_de_navlun', 0.0)
                             roi_son_maliyet = hesaplama_sim.get('tr_nl_de_son_maliyet', 0.0)
                         else:
-                            roi_navlun = hesaplama_sim.get('tr_de_navlun', 0.0)
+                            roi_navlun = hesaplama_sim.get('hava_tr_de_navlun', 0.0)
                             roi_son_maliyet = hesaplama_sim.get('tr_de_son_maliyet', 0.0)
                     roi_denom = ham_maliyet_val + roi_navlun
                     sim_roi = ((sim_satis_fiyati - roi_son_maliyet) / roi_denom) if roi_denom > 0 else 0.0
@@ -1182,10 +1199,9 @@ def main():
                 # Boş CSV Şablonu
                 template_required = [
                     'title', 'ean', 'iwasku', 'fiyat', 'ham_maliyet_euro', 'desi',
-                    'unit_in', 'box_in', 'pick_pack', 'storage', 'fedex',
-                    'tr_ne_navlun', 'ne_de_navlun', 'express_kargo', 'ddp', 'tr_de_navlun'
+                    'tr_ne_navlun', 'ne_de_navlun', 'express_kargo', 'ddp'
                 ]
-                template_optional = ['reklam']
+                template_optional = ['reklam', 'hava_tr_de_navlun', 'kara_tr_de_navlun']
                 template_cols = template_required + template_optional
                 template_df = pd.DataFrame(columns=template_cols)
                 tmpl_csv = io.StringIO()
@@ -1216,11 +1232,11 @@ def main():
                     # Gerekli sütunları kontrol et
                     required_columns = [
                         'title', 'ean', 'iwasku', 'fiyat', 'ham_maliyet_euro', 'desi',
-                        'unit_in', 'box_in', 'pick_pack', 'storage', 'fedex',
-                        'tr_ne_navlun', 'ne_de_navlun', 'express_kargo', 'ddp', 'tr_de_navlun'
+                        'tr_ne_navlun', 'ne_de_navlun', 'express_kargo', 'ddp'
                     ]
                     
-                    optional_columns = ['reklam']  # İsteğe bağlı sütunlar
+                    # İsteğe bağlı sütunlar: türetilmiş veya ek bilgiler
+                    optional_columns = ['reklam', 'hava_tr_de_navlun', 'kara_tr_de_navlun']
                     
                     missing_columns = []
                     for col in required_columns:
@@ -1236,6 +1252,8 @@ def main():
                         
                         st.write("**Gerekli tüm sütunlar:**")
                         st.code(", ".join(required_columns), language="text")
+                        st.write("**Opsiyonel sütunlar:**")
+                        st.code(", ".join(optional_columns), language="text")
                         
                         st.warning("⚠️ Lütfen CSV dosyanızı kontrol edin ve eksik sütunları ekleyin.")
                         return
