@@ -56,7 +56,7 @@ def migrate_csv_to_supabase():
     
     # Eksik kolonları tamamla
     required_columns = [
-        'title', 'ean', 'iwasku', 'fiyat', 'ham_maliyet_euro', 'ham_maliyet_usd', 'desi',
+        'title', 'ean', 'iwasku', 'fiyat', 'ham_maliyet_euro', 'desi',
         'tr_ne_navlun', 'ne_de_navlun', 'express_kargo', 'ddp', 'hava_tr_de_navlun', 'kara_tr_de_navlun', 'reklam'
     ]
     

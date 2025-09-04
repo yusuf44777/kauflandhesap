@@ -77,6 +77,8 @@ Sol yan panelden aşağıdaki parametreleri ayarlayabilirsiniz:
 - **Reklam Maliyeti (€)**: Ürün başına reklam maliyeti
 - **Pazar Yeri Kesintisi (%)**: Platform komisyon oranı
 - **Vergi Yüzdesi (%)**: Ürünün vergisel yükü
+  
+Para birimi: Sistem yalnızca Euro (€) ile çalışır. Tüm girişler EUR olmalıdır.
 
 ### 2. Veri Yükleme
 - CSV dosyasını yükleyerek ürün verilerinizi içe aktarın

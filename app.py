@@ -4,7 +4,8 @@ import json
 import os
 from datetime import datetime
 import io
-import requests
+# requests kaldırıldı (kur fonksiyonu iptal edildi)
+import re
 from pathlib import Path
 from supabase import create_client, Client
 
@@ -73,14 +74,13 @@ TR_DE_NAVLUN_BY_DESI = {
     30.0: 108.18,
 }
 
-# USD→EUR kur ayarları
-DEFAULT_USD_EUR = 0.92  # Ağ erişimi yoksa yedek kur
+# Para birimi: Sistem sadece EUR kullanır
 
 # Uygulamada kullanılan temel kolonlar (DB için başlıklar)
 # Not: Eski `tr_de_navlun` alanı artık `hava_tr_de_navlun` olarak tutulur.
 # `unit_in`, `box_in`, `pick_pack`, `storage`, `fedex` alanları kaldırıldı.
 DB_COLUMNS = [
-    'title', 'ean', 'iwasku', 'fiyat', 'ham_maliyet_euro', 'ham_maliyet_usd', 'desi',
+    'title', 'ean', 'iwasku', 'fiyat', 'ham_maliyet_euro', 'desi',
     'tr_ne_navlun', 'ne_de_navlun', 'kara_tr_de_navlun',
     'express_kargo', 'ddp', 'hava_tr_de_navlun',
     'reklam'
@@ -110,50 +110,7 @@ def _get_supabase_client():
             st.error(f"Supabase client oluşturulamadı: {str(e)}")
         return None
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_usd_eur_rate_live():
-    """USD→EUR kurunu birden fazla ücretsiz kaynaktan dener.
-    Başarılı olursa {'rate': float, 'source': str} döner; aksi halde None.
-    """
-    # 1) exchangerate.host
-    try:
-        r = requests.get(
-            "https://api.exchangerate.host/latest",
-            params={"base": "USD", "symbols": "EUR"},
-            timeout=6,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            rate = float(data.get("rates", {}).get("EUR", 0))
-            if rate > 0:
-                return {"rate": rate, "source": "exchangerate.host"}
-    except Exception:
-        pass
-    # 2) open.er-api.com
-    try:
-        r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=6)
-        if r.status_code == 200:
-            data = r.json()
-            rate = float(data.get("rates", {}).get("EUR", 0))
-            if rate > 0:
-                return {"rate": rate, "source": "open.er-api.com"}
-    except Exception:
-        pass
-    # 3) frankfurter.app
-    try:
-        r = requests.get(
-            "https://api.frankfurter.app/latest",
-            params={"from": "USD", "to": "EUR"},
-            timeout=6,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            rate = float(data.get("rates", {}).get("EUR", 0))
-            if rate > 0:
-                return {"rate": rate, "source": "frankfurter.app"}
-    except Exception:
-        pass
-    return None
+## Kur fonksiyonları kaldırıldı — yalnızca EUR kullanılmakta
 
 def find_nearest_desi_key(desi_value):
     """Girilen desiyi en yakın tablo anahtarına eşler. Beraberlikte yukarı yuvarlar."""
@@ -292,6 +249,15 @@ def persist_df(df: pd.DataFrame):
                 except Exception:
                     pass
 
+                # Güvenlik: Boş dataset ile senkronizasyonu durdur (toplu silmeyi önle)
+                if df2.empty or len(df2.index) == 0:
+                    try:
+                        if st.session_state.get('debug_mode', False):
+                            st.warning("Senkronizasyon atlandı: kaynak dataset boş (silme önlendi)")
+                    except Exception:
+                        pass
+                    return
+
                 # Mevcut anahtarları al (EAN ve Title)
                 try:
                     existing = sb.table("products").select("ean,title").execute().data or []
@@ -303,6 +269,15 @@ def persist_df(df: pd.DataFrame):
                 # Hedef anahtar kümeleri
                 target_eans = {str(x) for x in df2.get("ean", pd.Series([], dtype=str)).astype(str) if str(x).strip() != ""}
                 target_titles = {str(x) for x in df2.get("title", pd.Series([], dtype=str)).astype(str) if str(x).strip() != ""}
+
+                # Eğer hedefte hiç anahtar yoksa, muhtemelen yanlışlık — işlemi iptal et
+                if not target_eans and not target_titles:
+                    try:
+                        if st.session_state.get('debug_mode', False):
+                            st.warning("Senkronizasyon atlandı: hedef anahtar setleri boş (silme önlendi)")
+                    except Exception:
+                        pass
+                    return
 
                 # Silinmesi gerekenler
                 to_delete_eans = list(existing_eans - target_eans)
@@ -347,22 +322,62 @@ def persist_df(df: pd.DataFrame):
         pass
 
 def clean_euro_value(value):
-    """Euro değerini temizler ve float'a çevirir"""
-    if pd.isna(value) or value == "":
-        return 0.0
-    if isinstance(value, str):
-        # €, ", " karakterlerini kaldır ve virgülü noktaya çevir
-        clean_val = value.replace('€', '').replace('"', '').replace(',', '.').strip()
-        try:
-            return float(clean_val)
-        except:
+    """Euro değerini temizler ve float'a çevirir.
+    - € işareti, boşluklar ve tırnakları kaldırır
+    - Binlik ayırıcıları (.,) doğru yorumlar
+    - Hem "1.234,56" hem "1,234.56" formatını destekler
+    """
+    try:
+        if value is None:
             return 0.0
-    return float(value) if value else 0.0
+        # NaN kontrolü
+        try:
+            if pd.isna(value):
+                return 0.0
+        except Exception:
+            pass
+        # Sayısal tipler
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                return float(value)
+            except Exception:
+                return 0.0
+        s = str(value)
+        if s.strip() == "":
+            return 0.0
+        s = s.replace('€', '').replace('"', '').replace(' ', '').strip()
+        # Ayırıcı tespiti
+        has_comma = ',' in s
+        has_dot = '.' in s
+        if has_comma and has_dot:
+            # Son görülen ayırıcı ondalıktır
+            last_comma = s.rfind(',')
+            last_dot = s.rfind('.')
+            if last_comma > last_dot:
+                # Virgül ondalık; noktalar binlik — hepsini kaldır, virgülü noktaya çevir
+                s = s.replace('.', '')
+                s = s.replace(',', '.')
+            else:
+                # Nokta ondalık; virgüller binlik — hepsini kaldır
+                s = s.replace(',', '')
+        elif has_comma and not has_dot:
+            # Sadece virgül varsa — ondalık kabul et, noktaları (varsa) binlik sayıp kaldır
+            s = s.replace('.', '')
+            s = s.replace(',', '.')
+        else:
+            # Sadece nokta varsa veya hiç yoksa — bırak, yalnızca uygunsuz karakterleri temizle
+            pass
+        # Kalan uygunsuz karakterleri temizle
+        s = re.sub(r"[^0-9\.-]", "", s)
+        return float(s) if s not in ("", ".", "-") else 0.0
+    except Exception:
+        return 0.0
 
 def calculate_total_cost(row, params):
     """İki farklı rota ile maliyet hesaplar: TR→NL→DE ve TR→DE"""
-    # Ham maliyet
+    # Ham maliyet – yalnızca EUR alanından alınır
     ham_maliyet = clean_euro_value(row.get('ham_maliyet_euro', 0))
+    
     # Satış fiyatı (pazar yeri ve vergi bu fiyata göre hesaplanacak)
     satis_fiyati = clean_euro_value(row.get('fiyat', 0))
     
@@ -384,28 +399,31 @@ def calculate_total_cost(row, params):
     # ROTA 1: TR → NL → DE
     # TR→NL segmenti: direkt girilen toplam değer kullanılır
     tr_ne_navlun_final = tr_ne_navlun_field
-    tr_nl_de_temel_maliyet = ham_maliyet + tr_ne_navlun_final + ne_de_navlun
-    tr_nl_de_reklam_dahil = tr_nl_de_temel_maliyet + reklam_maliyeti
-    # Vergi ve pazar yeri kesintisi satış fiyatı üzerinden hesaplanır
+    tr_nl_de_navlun = tr_ne_navlun_final + ne_de_navlun
+    # Temel Maliyet = Ham + (TR-NL + NL-DE)
+    tr_nl_de_temel_maliyet = ham_maliyet + tr_nl_de_navlun
+    # Son Maliyet = Temel + Reklam + Vergi + Pazaryeri
     tr_nl_de_vergi = (satis_fiyati * params['vergi_yuzdesi']) / 100
     tr_nl_de_pazaryeri_kesinti = (satis_fiyati * params['pazaryeri_kesintisi']) / 100
+    tr_nl_de_reklam_dahil = tr_nl_de_temel_maliyet + params['reklam_maliyeti']
     tr_nl_de_son_maliyet = tr_nl_de_reklam_dahil + tr_nl_de_vergi + tr_nl_de_pazaryeri_kesinti
     
     # ROTA 2: TR → DE (Direkt)
     # TR→DE segmenti: hava (express_kargo + ddp) veya tablo değeri
     tr_de_navlun_hesaplanan = express_kargo + ddp
-    # Öncelik tabloya göre otomatik navlun; yoksa mevcut alanlara düş
-    if tr_de_navlun_from_table > 0:
-        tr_de_navlun_final = tr_de_navlun_from_table
-    elif tr_de_navlun_hesaplanan > 0:
-        tr_de_navlun_final = tr_de_navlun_hesaplanan
+    # Hesaplamada express+ddp kullanılır (tablo değeri yalnızca referans)
+    if tr_de_navlun_hesaplanan > 0:
+        hava_tr_de_navlun_val = tr_de_navlun_hesaplanan
+    elif hava_tr_de_navlun_field > 0:
+        hava_tr_de_navlun_val = hava_tr_de_navlun_field
     else:
-        tr_de_navlun_final = hava_tr_de_navlun_field
-    tr_de_temel_maliyet = ham_maliyet + tr_de_navlun_final
-    tr_de_reklam_dahil = tr_de_temel_maliyet + reklam_maliyeti
-    # Vergi ve pazar yeri kesintisi satış fiyatı üzerinden hesaplanır
+        hava_tr_de_navlun_val = tr_de_navlun_from_table
+    # Temel Maliyet = Ham + (Express + DDP)
+    tr_de_temel_maliyet = ham_maliyet + (express_kargo + ddp)
+    # Son Maliyet = Temel + Reklam + Vergi + Pazaryeri
     tr_de_vergi = (satis_fiyati * params['vergi_yuzdesi']) / 100
     tr_de_pazaryeri_kesinti = (satis_fiyati * params['pazaryeri_kesintisi']) / 100
+    tr_de_reklam_dahil = tr_de_temel_maliyet + params['reklam_maliyeti']
     tr_de_son_maliyet = tr_de_reklam_dahil + tr_de_vergi + tr_de_pazaryeri_kesinti
     
     # En uygun rotayı seç
@@ -415,7 +433,7 @@ def calculate_total_cost(row, params):
     return {
         # TR→NL→DE Rotası
         'tr_nl_de_temel_maliyet': tr_nl_de_temel_maliyet,
-        'tr_nl_de_navlun': tr_ne_navlun_final + ne_de_navlun,
+        'tr_nl_de_navlun': tr_nl_de_navlun,
         'tr_nl_de_reklam_dahil': tr_nl_de_reklam_dahil,
         'tr_nl_de_vergi': tr_nl_de_vergi,
         'tr_nl_de_pazaryeri_kesinti': tr_nl_de_pazaryeri_kesinti,
@@ -423,7 +441,7 @@ def calculate_total_cost(row, params):
         
         # TR→DE Direkt Rota
         'tr_de_temel_maliyet': tr_de_temel_maliyet,
-        'hava_tr_de_navlun': tr_de_navlun_final,
+        'hava_tr_de_navlun': hava_tr_de_navlun_val,
         'tr_de_reklam_dahil': tr_de_reklam_dahil,
         'tr_de_vergi': tr_de_vergi,
         'tr_de_pazaryeri_kesinti': tr_de_pazaryeri_kesinti,
@@ -473,15 +491,11 @@ def main():
             help="Vergi oranı"
         )
         
-        # Kur (USD→EUR) bilgisi sidebar'da gösterilmez; arka planda belirlenir
-        fx_info = get_usd_eur_rate_live()
-        usd_eur_rate = float(fx_info['rate']) if (fx_info and fx_info.get('rate')) else DEFAULT_USD_EUR
-
+        # Kur ayarları kaldırıldı — yalnızca EUR kullanılır
         params = {
             "reklam_maliyeti": reklam_maliyeti,
             "pazaryeri_kesintisi": pazaryeri_kesintisi,
             "vergi_yuzdesi": vergi_yuzdesi,
-            "usd_eur_rate": float(usd_eur_rate)
         }
         
         st.markdown("---")
@@ -520,6 +534,19 @@ def main():
                     st.error("❌ Client oluşturulamadı")
             else:
                 st.error("❌ Secrets eksik - secrets.toml dosyasını kontrol edin")
+            # DB onarım/yeniden senkronizasyon yardımcısı
+            st.markdown("---")
+            st.caption("DB onarım/yeniden senkronizasyon")
+            if st.button("🔁 Verileri Yeniden Senkronize Et"):
+                try:
+                    base_df = load_csv_data()
+                    if not base_df.empty:
+                        persist_df(base_df)
+                        st.success("✅ Yeniden senkronizasyon denendi. Ürünler Supabase ile eşitlendi (veya CSV güncellendi).")
+                    else:
+                        st.warning("⚠️ Senkronize edilecek veri bulunamadı.")
+                except Exception as e:
+                    st.error(f"❌ Senkronizasyon hatası: {str(e)}")
     
     # Ana tabs
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -546,10 +573,15 @@ def main():
                     hesaplama = calculate_total_cost(row, params)
                     hesaplama_sonuclari.append(hesaplama)
                     try:
-                        ham = clean_euro_value(row.get('ham_maliyet_euro', 0))
-                        navlun = hesaplama['tr_nl_de_navlun'] if hesaplama['optimal_route'] == "TR→NL→DE" else hesaplama['hava_tr_de_navlun']
-                        denom = ham + navlun
-                        roi_val = ((df.at[index, 'Satış Fiyatı'] - hesaplama['optimal_cost']) / denom) if denom > 0 else 0.0
+                        # ROI = (Satış Fiyatı - Son Maliyet) / Temel Maliyet
+                        if hesaplama['optimal_route'] == "TR→NL→DE":
+                            temel = hesaplama.get('tr_nl_de_temel_maliyet', 0.0)
+                            son = hesaplama.get('tr_nl_de_son_maliyet', hesaplama.get('optimal_cost', 0.0))
+                        else:
+                            temel = hesaplama.get('tr_de_temel_maliyet', 0.0)
+                            son = hesaplama.get('tr_de_son_maliyet', hesaplama.get('optimal_cost', 0.0))
+                        kar_roi = (df.at[index, 'Satış Fiyatı'] - son)
+                        roi_val = (kar_roi / temel) if temel and temel > 0 else 0.0
                     except Exception:
                         roi_val = 0.0
                     roi_list.append(roi_val)
@@ -772,16 +804,9 @@ def main():
             
             with col2:
                 fiyat = st.number_input("Satış Fiyatı (€)*", min_value=0.0, step=0.01)
-                hm_currency = st.selectbox("Ham Maliyet Para Birimi", options=["EUR", "USD"], index=0)
-                if hm_currency == "EUR":
-                    ham_maliyet_input = st.number_input("Ham Maliyet (EUR)*", min_value=0.0, step=0.01)
-                    ham_maliyet_eur_val = ham_maliyet_input
-                    ham_maliyet_usd_val = None
-                else:
-                    ham_maliyet_input = st.number_input("Ham Maliyet (USD)*", min_value=0.0, step=0.01)
-                    ham_maliyet_usd_val = ham_maliyet_input
-                    ham_maliyet_eur_val = ham_maliyet_input * params.get('usd_eur_rate', DEFAULT_USD_EUR)
-                    st.caption(f"Dönüşüm: ${ham_maliyet_usd_val:.2f} × {params.get('usd_eur_rate', DEFAULT_USD_EUR):.4f} = €{ham_maliyet_eur_val:.2f}")
+                ham_maliyet_input = st.number_input("Ham Maliyet (€)*", min_value=0.0, step=0.01)
+                ham_maliyet_eur_final = ham_maliyet_input * 1.0
+                
                 desi = st.number_input(
                     "Desi",
                     min_value=0.0,
@@ -819,14 +844,14 @@ def main():
             submitted = st.form_submit_button("Ürün Ekle", type="primary")
             
             if submitted:
-                if title and fiyat > 0 and ham_maliyet_eur_val >= 0:
+                if title and fiyat > 0 and ham_maliyet_eur_final >= 0:
                     # Yeni ürün verisi
                     new_product = {
                         'title': title,
                         'ean': ean,
                         'iwasku': iwasku,
                         'fiyat': f"€{fiyat:.2f}",
-                        'ham_maliyet_euro': round(ham_maliyet_eur_val, 2),
+                        'ham_maliyet_euro': f"€{ham_maliyet_eur_final:.2f}",  # Her zaman EUR olarak kaydet
                         'desi': desi,
                         'tr_ne_navlun': f"€{tr_ne_navlun:.2f}",
                         'ne_de_navlun': f"€{ne_de_navlun:.2f}",
@@ -836,8 +861,6 @@ def main():
                         'hava_tr_de_navlun': f"€{(float(express_kargo) + float(ddp)):.2f}",
                         'reklam': f"€{params['reklam_maliyeti']:.2f}"
                     }
-                    if ham_maliyet_usd_val is not None:
-                        new_product['ham_maliyet_usd'] = round(ham_maliyet_usd_val, 2)
                     
                     # CSV'ye ekle
                     df = load_csv_data()
@@ -954,21 +977,37 @@ def main():
                 # Maliyet bileşenleri tablosu
                 st.subheader("📋 Maliyet Bileşenleri Detayı")
                 
-                # TR-NL-DE Route Breakdown
+                # Ham maliyet basit - sadece EUR değeri
+                ham_maliyet_final = clean_euro_value(selected_row.get('ham_maliyet_euro', 0))
+                
+                # Bileşen superset'i: her iki rota için de uyumlu
                 tr_nl_breakdown = {
-                    'Bileşen': ['Ham Maliyet', 'TR-NL Navlun', 'NL-DE Navlun', 'Reklam', f'Vergi ({params["vergi_yuzdesi"]}%)', f'Pazaryeri ({params["pazaryeri_kesintisi"]}%)'],
+                    'Bileşen': [
+                        'Ham Maliyet',
+                        'TR-NL Navlun',
+                        'NL-DE Navlun',
+                        'Express Kargo',
+                        'DDP',
+                        'Reklam',
+                        f'Vergi ({params["vergi_yuzdesi"]}%)',
+                        f'Pazaryeri ({params["pazaryeri_kesintisi"]}%)'
+                    ],
                     'TR→NL→DE (€)': [
-                        clean_euro_value(selected_row['ham_maliyet_euro']),
-                        clean_euro_value(selected_row['tr_ne_navlun']),
-                        clean_euro_value(selected_row['ne_de_navlun']),
+                        ham_maliyet_final,
+                        clean_euro_value(selected_row.get('tr_ne_navlun', 0)),
+                        clean_euro_value(selected_row.get('ne_de_navlun', 0)),
+                        0.0,
+                        0.0,
                         hesaplama['reklam_maliyeti'],
                         hesaplama['tr_nl_de_vergi'],
                         hesaplama['tr_nl_de_pazaryeri_kesinti']
                     ],
                     'TR→DE (€)': [
-                        clean_euro_value(selected_row['ham_maliyet_euro']),
-                        0,  # TR-DE rotasında TR-NL yok
-                        hesaplama['hava_tr_de_navlun'],
+                        ham_maliyet_final,
+                        0.0,
+                        0.0,
+                        clean_euro_value(selected_row.get('express_kargo', 0)),
+                        clean_euro_value(selected_row.get('ddp', 0)),
                         hesaplama['reklam_maliyeti'],
                         hesaplama['tr_de_vergi'],
                         hesaplama['tr_de_pazaryeri_kesinti']
@@ -1076,25 +1115,25 @@ def main():
                     roi_route_choice = st.selectbox(
                         "ROI için Rota",
                         options=["Optimal", "TR→NL→DE", "TR→DE"],
-                        help="ROI = Kâr / (Ham Maliyet + Navlun)"
+                        help="ROI = (Satış Fiyatı - Son Maliyet) / Temel Maliyet"
                     )
                 with roi_val_col:
-                    ham_maliyet_val = clean_euro_value(selected_row.get('ham_maliyet_euro', 0))
+                    # ROI = (Satış Fiyatı - Son Maliyet) / Temel Maliyet
                     if roi_route_choice == "TR→NL→DE":
-                        roi_navlun = hesaplama_sim.get('tr_nl_de_navlun', 0.0)
-                        roi_son_maliyet = hesaplama_sim.get('tr_nl_de_son_maliyet', 0.0)
+                        temel = hesaplama_sim.get('tr_nl_de_temel_maliyet', 0.0)
+                        son = hesaplama_sim.get('tr_nl_de_son_maliyet', hesaplama_sim.get('optimal_cost', 0.0))
                     elif roi_route_choice == "TR→DE":
-                        roi_navlun = hesaplama_sim.get('hava_tr_de_navlun', 0.0)
-                        roi_son_maliyet = hesaplama_sim.get('tr_de_son_maliyet', 0.0)
+                        temel = hesaplama_sim.get('tr_de_temel_maliyet', 0.0)
+                        son = hesaplama_sim.get('tr_de_son_maliyet', hesaplama_sim.get('optimal_cost', 0.0))
                     else:
                         if hesaplama_sim.get('optimal_route') == "TR→NL→DE":
-                            roi_navlun = hesaplama_sim.get('tr_nl_de_navlun', 0.0)
-                            roi_son_maliyet = hesaplama_sim.get('tr_nl_de_son_maliyet', 0.0)
+                            temel = hesaplama_sim.get('tr_nl_de_temel_maliyet', 0.0)
+                            son = hesaplama_sim.get('tr_nl_de_son_maliyet', hesaplama_sim.get('optimal_cost', 0.0))
                         else:
-                            roi_navlun = hesaplama_sim.get('hava_tr_de_navlun', 0.0)
-                            roi_son_maliyet = hesaplama_sim.get('tr_de_son_maliyet', 0.0)
-                    roi_denom = ham_maliyet_val + roi_navlun
-                    sim_roi = ((sim_satis_fiyati - roi_son_maliyet) / roi_denom) if roi_denom > 0 else 0.0
+                            temel = hesaplama_sim.get('tr_de_temel_maliyet', 0.0)
+                            son = hesaplama_sim.get('tr_de_son_maliyet', hesaplama_sim.get('optimal_cost', 0.0))
+                    kar_roi = sim_satis_fiyati - son
+                    sim_roi = (kar_roi / temel) if temel and temel > 0 else 0.0
                     st.metric("Sim. ROI", f"{sim_roi:.2f}")
                 # Simülasyon fiyatını kaydet
                 save_col1, save_col2 = st.columns([1,3])
